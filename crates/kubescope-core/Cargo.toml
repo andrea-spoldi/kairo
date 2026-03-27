@@ -1,0 +1,16 @@
+[package]
+name = "kubescope-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kube = { version = "3.1.0", features = ["runtime", "client", "rustls-tls"] }
+k8s-openapi = { version = "0.27.0", features = ["latest"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+tracing = "0.1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+chrono = "0.4"
