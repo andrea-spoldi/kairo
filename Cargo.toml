@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "crates/kubescope-core",
+    "crates/kubescope-ui",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+
+[profile.dev]
+opt-level = 0
+debug = "limited"
+split-debuginfo = "unpacked"
+
+[profile.dev.package]
+gpui = { opt-level = 3 }
+gpui_platform = { opt-level = 3 }
