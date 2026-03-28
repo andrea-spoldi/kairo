@@ -1,6 +1,7 @@
 mod actions;
 mod app;
 mod components;
+mod kube_runtime;
 mod theme;
 
 use app::Workspace;
@@ -10,6 +11,11 @@ use gpui_component_assets::Assets;
 
 fn main() {
     tracing_subscriber::fmt::init();
+
+    // Initialise the dedicated tokio runtime for kube-rs operations.
+    // GPUI on macOS uses Grand Central Dispatch, not tokio, so kube-rs (which
+    // depends on tower/hyper) must run on a real tokio executor.
+    kube_runtime::init();
 
     gpui_platform::application()
         .with_assets(Assets)
