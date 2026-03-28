@@ -14,7 +14,7 @@ use gpui_component::{
     label::Label,
     select::{Select, SelectEvent, SelectState},
 };
-use kubescope_core::{KubeClient, watchers::NamespaceWatcher};
+use kubescope_core::{KubeClient, models::PodSummary, watchers::NamespaceWatcher};
 use tracing::{error, info};
 
 use crate::{
@@ -33,6 +33,7 @@ const POLL_INTERVAL_MS: u64 = 100;
 enum KubeEvent {
     Connected(KubeClient),
     Namespace(String),
+    PodList(Vec<PodSummary>),
     Error(String),
 }
 
@@ -45,6 +46,7 @@ pub struct Workspace {
     dock_area: Entity<DockArea>,
     context_select: Entity<SelectState<Vec<SharedString>>>,
     ns_select: Entity<SelectState<Vec<SharedString>>>,
+    pod_list_panel: Entity<PodListPanel>,
     /// Sorted list of namespace names seen from the current cluster.
     namespaces: Vec<SharedString>,
     active_namespace: SharedString,
@@ -99,11 +101,11 @@ impl Workspace {
         let dock_area = cx.new(|cx| DockArea::new(DOCK_ID, Some(DOCK_VERSION), window, cx));
         let weak_dock = dock_area.downgrade();
 
-        let pod_list_panel = cx.new(|cx| PodListPanel::new(cx));
+        let pod_list_panel = cx.new(|cx| PodListPanel::new(window, cx));
         let pod_detail_panel = cx.new(|cx| PodDetailPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
 
-        let center = DockItem::tab(pod_list_panel, &weak_dock, window, cx);
+        let center = DockItem::tab(pod_list_panel.clone(), &weak_dock, window, cx);
         let right_panel = DockItem::tab(pod_detail_panel, &weak_dock, window, cx);
         let bottom_panel = DockItem::tab(log_panel, &weak_dock, window, cx);
 
@@ -147,6 +149,7 @@ impl Workspace {
             dock_area,
             context_select,
             ns_select,
+            pod_list_panel,
             namespaces: Vec::new(),
             active_namespace: SharedString::from("All"),
             active_context: current_ctx.clone(),
@@ -220,6 +223,13 @@ impl Workspace {
                     cx.notify();
                 }
             }
+            KubeEvent::PodList(pods) => {
+                self.pod_list_panel.update(cx, |panel, cx| {
+                    panel.table.update(cx, |table, _| {
+                        table.delegate_mut().pods = pods;
+                    });
+                });
+            }
             KubeEvent::Error(msg) => {
                 error!("kube error: {msg}");
             }
@@ -236,11 +246,16 @@ impl Workspace {
         let abort_flag = Arc::new(AtomicBool::new(false));
         self.abort_flag = abort_flag.clone();
 
-        // Reset namespace state.
+        // Reset namespace and pod state.
         self.namespaces.clear();
         self.active_namespace = SharedString::from("All");
         self.active_context = Some(SharedString::from(context.clone()));
         self.kube_client = None;
+        self.pod_list_panel.update(cx, |panel, cx| {
+            panel.table.update(cx, |table, _| {
+                table.delegate_mut().pods.clear();
+            });
+        });
 
         let items = self.ns_items();
         self.ns_select.update(cx, |state, cx| {
@@ -257,10 +272,36 @@ impl Workspace {
                         .unwrap()
                         .push_back(KubeEvent::Connected(client.clone()));
 
-                    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
-                    let _watcher = NamespaceWatcher::start(client, tx);
+                    // Start pod watcher.
+                    let pod_events = events.clone();
+                    let pod_abort = abort_flag.clone();
+                    let pod_client = client.clone();
+                    tokio::spawn(async move {
+                        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                        tokio::spawn(async move {
+                            if let Err(e) =
+                                kubescope_core::watchers::pod_watcher(pod_client.client, None, tx)
+                                    .await
+                            {
+                                tracing::error!("pod watcher error: {e}");
+                            }
+                        });
+                        while let Some(pods) = rx.recv().await {
+                            if pod_abort.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            pod_events
+                                .lock()
+                                .unwrap()
+                                .push_back(KubeEvent::PodList(pods));
+                        }
+                    });
 
-                    while let Some(ns) = rx.recv().await {
+                    // Start namespace watcher.
+                    let (ns_tx, mut ns_rx) = tokio::sync::mpsc::channel::<String>(64);
+                    let _watcher = NamespaceWatcher::start(client, ns_tx);
+
+                    while let Some(ns) = ns_rx.recv().await {
                         if abort_flag.load(Ordering::SeqCst) {
                             break;
                         }
