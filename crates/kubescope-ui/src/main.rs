@@ -3,9 +3,9 @@ mod app;
 mod components;
 mod theme;
 
-use app::AppRoot;
+use app::Workspace;
 use gpui::*;
-use gpui_component::Root;
+use gpui_component::{Root, TitleBar};
 use gpui_component_assets::Assets;
 
 fn main() {
@@ -20,24 +20,25 @@ fn main() {
             cx.spawn(async move |cx| {
                 cx.open_window(
                     WindowOptions {
-                        titlebar: Some(TitlebarOptions {
-                            title: Some("KubeScope".into()),
-                            appears_transparent: true,
-                            ..Default::default()
-                        }),
+                        titlebar: Some(TitleBar::title_bar_options()),
                         window_bounds: Some(WindowBounds::Windowed(Bounds {
-                            origin: point(px(100.0), px(100.0)),
-                            size: size(px(1280.0), px(800.0)),
+                            origin: point(px(100.), px(100.)),
+                            size: size(px(1280.), px(800.)),
                         })),
+                        window_min_size: Some(Size {
+                            width: px(640.),
+                            height: px(480.),
+                        }),
+                        kind: WindowKind::Normal,
                         ..Default::default()
                     },
                     |window, cx| {
-                        let view = cx.new(|_| AppRoot);
+                        let view = cx.new(|cx| Workspace::new(window, cx));
                         let view: AnyView = view.into();
                         cx.new(|cx| Root::new(view, window, cx))
                     },
                 )
-                .expect("Failed to open window");
+                .expect("failed to open window");
             })
             .detach();
         });
