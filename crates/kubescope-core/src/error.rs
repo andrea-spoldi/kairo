@@ -18,4 +18,8 @@ pub enum CoreError {
     /// The requested context does not exist in the kubeconfig.
     #[error("context not found: {0}")]
     ContextNotFound(String),
+
+    /// An I/O error (e.g. reading log stream lines).
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }

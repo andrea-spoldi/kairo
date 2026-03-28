@@ -249,3 +249,37 @@ Wire real data:
   git rev it expects, then align your workspace’s gpui dep to match
 - **kube-rs can’t connect**: verify `kubectl cluster-info` works; kube-rs reads the same kubeconfig
 - **Slow first build**: the Zed monorepo git dep pulls a lot; subsequent builds use cargo cache
+
+## Project Memory System
+
+Institutional knowledge lives in `docs/project_notes/` for consistency across sessions.
+
+### Memory Files
+
+- **bugs.md** — Bug log with dates, solutions, and prevention notes
+- **decisions.md** — Architectural Decision Records (ADRs) with context and trade-offs
+- **key_facts.md** — Project configuration, approved deps, important URLs, phase progress
+- **issues.md** — Work log with brief descriptions of completed phases/tasks
+
+### Memory-Aware Protocols
+
+**Before proposing architectural changes:**
+- Check `docs/project_notes/decisions.md` for existing decisions
+- If the proposal conflicts, acknowledge the existing ADR and explain why revisiting it is warranted
+
+**When encountering errors or bugs:**
+- Search `docs/project_notes/bugs.md` for similar issues before diagnosing
+- Apply known solutions if found; document new bugs and solutions when resolved
+
+**When looking up project configuration or approved deps:**
+- Check `docs/project_notes/key_facts.md` first
+
+**When completing a phase or significant task:**
+- Log it in `docs/project_notes/issues.md` with date and brief description
+- Update the "Phase Progress" section in `key_facts.md`
+
+**Style guidelines for memory files:**
+- Bullet lists, not tables
+- Always include dates (YYYY-MM-DD)
+- Keep entries to 1–3 lines; link to code/commits for details
+- Manual cleanup of old entries is expected (not automated)

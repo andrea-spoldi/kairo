@@ -4,4 +4,5 @@ pub mod logs;
 pub mod models;
 pub mod watchers;
 
+pub use client::KubeClient;
 pub use error::CoreError;

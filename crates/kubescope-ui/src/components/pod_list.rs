@@ -1,6 +1,7 @@
 use gpui::*;
-use gpui_component::table::{Column, DataTable, TableDelegate, TableState};
+use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
+use gpui_component::table::{Column, DataTable, TableDelegate, TableState};
 use kubescope_core::models::PodSummary;
 
 use crate::theme::status_color;
@@ -74,21 +75,47 @@ impl TableDelegate for PodTableDelegate {
     }
 }
 
-/// Virtualized pod list table component.
-pub struct PodList {
+/// Center panel — virtualized pod list table.
+pub struct PodListPanel {
     pub table: Entity<TableState<PodTableDelegate>>,
+    focus_handle: FocusHandle,
 }
 
-impl PodList {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl PodListPanel {
+    pub fn new(window: &mut Window, cx: &mut App) -> Self {
         let delegate = PodTableDelegate::new();
         let table = cx.new(|cx| TableState::new(delegate, window, cx));
-        PodList { table }
+        Self {
+            table,
+            focus_handle: cx.focus_handle(),
+        }
     }
 }
 
-impl Render for PodList {
+impl EventEmitter<PanelEvent> for PodListPanel {}
+
+impl Focusable for PodListPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Panel for PodListPanel {
+    fn panel_name(&self) -> &'static str {
+        "PodListPanel"
+    }
+
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        "Pods"
+    }
+
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl Render for PodListPanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        DataTable::new(&self.table).stripe(true)
+        div().size_full().child(DataTable::new(&self.table).stripe(true))
     }
 }

@@ -1,93 +1,373 @@
-use std::sync::mpsc;
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use gpui::*;
-use gpui_component::table::TableEvent;
-use kubescope_core::{client::KubeClient, watchers::pod_watcher};
+use gpui_component::{
+    TitleBar,
+    dock::{DockArea, DockItem},
+    label::Label,
+    select::{Select, SelectEvent, SelectState},
+};
+use kubescope_core::{KubeClient, models::PodSummary, watchers::NamespaceWatcher};
+use tracing::{error, info};
 
-use crate::components::pod_list::PodList;
+use crate::{
+    components::{
+        log_viewer::LogViewerPanel, pod_detail::PodDetailPanel, pod_list::PodListPanel,
+    },
+    kube_runtime,
+};
 
-/// Root application view.
-pub struct AppRoot {
-    pod_list: Entity<PodList>,
-    _subscriptions: Vec<Subscription>,
-    _update_task: Task<()>,
+const DOCK_ID: &str = "kubescope-dock";
+const DOCK_VERSION: usize = 1;
+const POLL_INTERVAL_MS: u64 = 100;
+
+// ── Event queue shared between the tokio kube tasks and the GPUI poll loop ──
+
+enum KubeEvent {
+    Connected(KubeClient),
+    Namespace(String),
+    PodList(Vec<PodSummary>),
+    Error(String),
 }
 
-impl AppRoot {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let pod_list = cx.new(|cx| PodList::new(window, cx));
+type EventQueue = Arc<Mutex<VecDeque<KubeEvent>>>;
 
-        // Subscribe to row-selection events (extended in Phase 7 to open the detail panel).
-        let table_entity = pod_list.read(cx).table.clone();
-        let _subscriptions = vec![cx.subscribe_in(
-            &table_entity,
+// ── Workspace ─────────────────────────────────────────────────────────────────
+
+/// Root view: title bar + dock area.
+pub struct Workspace {
+    dock_area: Entity<DockArea>,
+    context_select: Entity<SelectState<Vec<SharedString>>>,
+    ns_select: Entity<SelectState<Vec<SharedString>>>,
+    pod_list_panel: Entity<PodListPanel>,
+    /// Sorted list of namespace names seen from the current cluster.
+    namespaces: Vec<SharedString>,
+    active_namespace: SharedString,
+    active_context: Option<SharedString>,
+    kube_client: Option<KubeClient>,
+    /// Events posted by tokio tasks, drained by the GPUI poll loop.
+    events: EventQueue,
+    /// Set to true to signal the running watcher/receiver to stop.
+    abort_flag: Arc<AtomicBool>,
+    /// GPUI task that polls `events` on a timer; kept alive by storing it.
+    _poll_task: Task<()>,
+}
+
+impl Workspace {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // ── Load kubeconfig contexts synchronously ────────────────────────────
+        let (contexts, current_ctx) = match KubeClient::list_contexts() {
+            Ok(names) => {
+                let current = KubeClient::current_context().ok().flatten();
+                (
+                    names.into_iter().map(SharedString::from).collect::<Vec<_>>(),
+                    current.map(SharedString::from),
+                )
+            }
+            Err(e) => {
+                error!("failed to read kubeconfig: {e}");
+                (Vec::new(), None)
+            }
+        };
+
+        let initial_ctx_ix = current_ctx.as_ref().and_then(|c| {
+            contexts
+                .iter()
+                .position(|x| x == c)
+                .map(|i| gpui_component::IndexPath::default().row(i))
+        });
+
+        let context_select = cx.new(|cx| {
+            SelectState::new(contexts, initial_ctx_ix, window, cx)
+        });
+
+        let ns_select = cx.new(|cx| {
+            SelectState::new(
+                vec![SharedString::from("All")],
+                Some(gpui_component::IndexPath::default()),
+                window,
+                cx,
+            )
+        });
+
+        // ── Build dock layout ─────────────────────────────────────────────────
+        let dock_area = cx.new(|cx| DockArea::new(DOCK_ID, Some(DOCK_VERSION), window, cx));
+        let weak_dock = dock_area.downgrade();
+
+        let pod_list_panel = cx.new(|cx| PodListPanel::new(window, cx));
+        let pod_detail_panel = cx.new(|cx| PodDetailPanel::new(cx));
+        let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
+
+        let center = DockItem::tab(pod_list_panel.clone(), &weak_dock, window, cx);
+        let right_panel = DockItem::tab(pod_detail_panel, &weak_dock, window, cx);
+        let bottom_panel = DockItem::tab(log_panel, &weak_dock, window, cx);
+
+        dock_area.update(cx, |dock, cx| {
+            dock.set_center(center, window, cx);
+            dock.set_right_dock(right_panel, Some(px(340.)), false, window, cx);
+            dock.set_bottom_dock(bottom_panel, Some(px(220.)), false, window, cx);
+        });
+
+        let events: EventQueue = Arc::new(Mutex::new(VecDeque::new()));
+        let abort_flag = Arc::new(AtomicBool::new(false));
+
+        // ── Subscribe to context selection ────────────────────────────────────
+        cx.subscribe_in(
+            &context_select,
             window,
-            |_this, _table, event: &TableEvent, _window, _cx| {
-                if let TableEvent::SelectRow(ix) = event {
-                    tracing::debug!("pod row selected: {}", ix);
+            |this, _, event: &SelectEvent<Vec<SharedString>>, window, cx| {
+                if let SelectEvent::Confirm(Some(ctx)) = event {
+                    this.switch_context(ctx.to_string(), window, cx);
                 }
             },
-        )];
+        )
+        .detach();
 
-        // Channel that bridges the tokio watcher thread → GPUI polling task.
-        let (std_tx, std_rx) = mpsc::channel::<Vec<kubescope_core::models::PodSummary>>();
+        // ── Subscribe to namespace selection ──────────────────────────────────
+        cx.subscribe_in(
+            &ns_select,
+            window,
+            |this, _, event: &SelectEvent<Vec<SharedString>>, _window, _cx| {
+                if let SelectEvent::Confirm(Some(ns)) = event {
+                    this.active_namespace = ns.clone();
+                }
+            },
+        )
+        .detach();
 
-        // Dedicated OS thread with its own tokio runtime for the K8s watcher.
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("failed to build tokio runtime");
-            rt.block_on(async move {
-                let (pod_tx, mut pod_rx) = tokio::sync::mpsc::unbounded_channel();
-                match KubeClient::try_default().await {
-                    Ok(kc) => {
-                        tokio::spawn(async move {
-                            if let Err(e) = pod_watcher(kc.client, None, pod_tx).await {
-                                tracing::error!("pod watcher error: {}", e);
-                            }
-                        });
+        // ── Start GPUI poll loop ──────────────────────────────────────────────
+        let poll_task = Self::start_poll_loop(events.clone(), window, cx);
+
+        let mut ws = Self {
+            dock_area,
+            context_select,
+            ns_select,
+            pod_list_panel,
+            namespaces: Vec::new(),
+            active_namespace: SharedString::from("All"),
+            active_context: current_ctx.clone(),
+            kube_client: None,
+            events,
+            abort_flag,
+            _poll_task: poll_task,
+        };
+
+        // Connect to the current context
+        if let Some(ctx) = current_ctx {
+            ws.switch_context(ctx.to_string(), window, cx);
+        }
+
+        ws
+    }
+
+    // ── Poll loop ──────────────────────────────────────────────────────────────
+
+    /// Spawn a GPUI task that drains [`KubeEvent`]s posted by tokio tasks.
+    fn start_poll_loop(
+        events: EventQueue,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let executor = cx.background_executor().clone();
+        cx.spawn_in(window, async move |weak_ws, cx| loop {
+            executor.timer(Duration::from_millis(POLL_INTERVAL_MS)).await;
+
+            let batch: Vec<KubeEvent> = {
+                let mut q = events.lock().unwrap();
+                q.drain(..).collect()
+            };
+            if batch.is_empty() {
+                continue;
+            }
+            let keep_going = weak_ws
+                .update_in(cx, |this, window, cx| {
+                    for ev in batch {
+                        this.handle_kube_event(ev, window, cx);
                     }
-                    Err(e) => {
-                        tracing::warn!("no cluster connection: {}", e);
-                        return;
-                    }
+                })
+                .is_ok();
+            if !keep_going {
+                break;
+            }
+        })
+    }
+
+    fn handle_kube_event(
+        &mut self,
+        event: KubeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            KubeEvent::Connected(client) => {
+                info!("connected to context: {}", client.context);
+                self.kube_client = Some(client);
+                cx.notify();
+            }
+            KubeEvent::Namespace(ns) => {
+                let name = SharedString::from(ns);
+                if !self.namespaces.contains(&name) {
+                    self.namespaces.push(name);
+                    self.namespaces.sort();
+                    let items = self.ns_items();
+                    self.ns_select.update(cx, |state, cx| {
+                        state.set_items(items, window, cx);
+                    });
+                    cx.notify();
                 }
-                while let Some(pods) = pod_rx.recv().await {
-                    if std_tx.send(pods).is_err() {
-                        break;
-                    }
-                }
+            }
+            KubeEvent::PodList(pods) => {
+                self.pod_list_panel.update(cx, |panel, cx| {
+                    panel.table.update(cx, |table, _| {
+                        table.delegate_mut().pods = pods;
+                    });
+                });
+            }
+            KubeEvent::Error(msg) => {
+                error!("kube error: {msg}");
+            }
+        }
+    }
+
+    // ── Context switching ──────────────────────────────────────────────────────
+
+    fn switch_context(&mut self, context: String, window: &mut Window, cx: &mut Context<Self>) {
+        info!("switching to context: {context}");
+
+        // Signal the previous watcher/receiver task to stop.
+        self.abort_flag.store(true, Ordering::SeqCst);
+        let abort_flag = Arc::new(AtomicBool::new(false));
+        self.abort_flag = abort_flag.clone();
+
+        // Reset namespace and pod state.
+        self.namespaces.clear();
+        self.active_namespace = SharedString::from("All");
+        self.active_context = Some(SharedString::from(context.clone()));
+        self.kube_client = None;
+        self.pod_list_panel.update(cx, |panel, cx| {
+            panel.table.update(cx, |table, _| {
+                table.delegate_mut().pods.clear();
             });
         });
 
-        // GPUI polling task: drain std channel every 100 ms, push into the table delegate.
-        let _update_task = cx.spawn(async move |_this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(100))
-                    .await;
-                while let Ok(pods) = std_rx.try_recv() {
-                    cx.update(|cx| {
-                        table_entity.update(cx, |table, _| {
-                            table.delegate_mut().pods = pods;
+        let items = self.ns_items();
+        self.ns_select.update(cx, |state, cx| {
+            state.set_items(items, window, cx);
+        });
+
+        // Submit kube work to the dedicated tokio runtime.
+        let events = self.events.clone();
+        kube_runtime::handle().spawn(async move {
+            match KubeClient::for_context(&context).await {
+                Ok(client) => {
+                    events
+                        .lock()
+                        .unwrap()
+                        .push_back(KubeEvent::Connected(client.clone()));
+
+                    // Start pod watcher.
+                    let pod_events = events.clone();
+                    let pod_abort = abort_flag.clone();
+                    let pod_client = client.clone();
+                    tokio::spawn(async move {
+                        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                        tokio::spawn(async move {
+                            if let Err(e) =
+                                kubescope_core::watchers::pod_watcher(pod_client.client, None, tx)
+                                    .await
+                            {
+                                tracing::error!("pod watcher error: {e}");
+                            }
                         });
+                        while let Some(pods) = rx.recv().await {
+                            if pod_abort.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            pod_events
+                                .lock()
+                                .unwrap()
+                                .push_back(KubeEvent::PodList(pods));
+                        }
                     });
+
+                    // Start namespace watcher.
+                    let (ns_tx, mut ns_rx) = tokio::sync::mpsc::channel::<String>(64);
+                    let _watcher = NamespaceWatcher::start(client, ns_tx);
+
+                    while let Some(ns) = ns_rx.recv().await {
+                        if abort_flag.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        events
+                            .lock()
+                            .unwrap()
+                            .push_back(KubeEvent::Namespace(ns));
+                    }
+                }
+                Err(e) => {
+                    events
+                        .lock()
+                        .unwrap()
+                        .push_back(KubeEvent::Error(e.to_string()));
                 }
             }
         });
+    }
 
-        AppRoot { pod_list, _subscriptions, _update_task }
+    /// Build the namespace select items: "All" sentinel + sorted namespace names.
+    fn ns_items(&self) -> Vec<SharedString> {
+        let mut items = vec![SharedString::from("All")];
+        items.extend(self.namespaces.iter().cloned());
+        items
     }
 }
 
-impl Render for AppRoot {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+impl Render for Workspace {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .relative()
             .size_full()
-            .bg(rgb(0x1E1E2E))
-            .text_color(rgb(0xCDD6F4))
-            .text_sm()
-            .child(self.pod_list.clone())
+            .flex()
+            .flex_col()
+            .child(
+                TitleBar::new()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .pl_2()
+                            .child(Label::new("KubeScope").text_sm()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                Select::new(&self.context_select)
+                                    .placeholder("Select context")
+                                    .menu_width(gpui::rems(14.)),
+                            )
+                            .child(
+                                Select::new(&self.ns_select)
+                                    .placeholder("Namespace")
+                                    .menu_width(gpui::rems(10.)),
+                            ),
+                    ),
+            )
+            .child(self.dock_area.clone())
+            .children(gpui_component::Root::render_sheet_layer(_window, cx))
+            .children(gpui_component::Root::render_dialog_layer(_window, cx))
+            .children(gpui_component::Root::render_notification_layer(_window, cx))
     }
 }
