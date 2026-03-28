@@ -1,10 +1,17 @@
 use gpui::*;
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
-use gpui_component::table::{Column, DataTable, TableDelegate, TableState};
+use gpui_component::table::{Column, DataTable, TableDelegate, TableEvent, TableState};
 use kubescope_core::models::PodSummary;
 
 use crate::theme::status_color;
+
+/// Emitted when the user clicks a pod row.
+#[derive(Clone)]
+pub struct PodSelected {
+    pub name: String,
+    pub namespace: String,
+}
 
 // Column definitions: (key, display name, default width px)
 const COLUMNS: &[(&str, &str, f32)] = &[
@@ -82,9 +89,26 @@ pub struct PodListPanel {
 }
 
 impl PodListPanel {
-    pub fn new(window: &mut Window, cx: &mut App) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let delegate = PodTableDelegate::new();
         let table = cx.new(|cx| TableState::new(delegate, window, cx));
+
+        cx.subscribe_in(
+            &table,
+            window,
+            |this, _table, event: &TableEvent, _window, cx| {
+                if let TableEvent::SelectRow(row_ix) = event {
+                    if let Some(pod) = this.table.read(cx).delegate().pods.get(*row_ix) {
+                        cx.emit(PodSelected {
+                            name: pod.name.clone(),
+                            namespace: pod.namespace.clone(),
+                        });
+                    }
+                }
+            },
+        )
+        .detach();
+
         Self {
             table,
             focus_handle: cx.focus_handle(),
@@ -93,6 +117,7 @@ impl PodListPanel {
 }
 
 impl EventEmitter<PanelEvent> for PodListPanel {}
+impl EventEmitter<PodSelected> for PodListPanel {}
 
 impl Focusable for PodListPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {

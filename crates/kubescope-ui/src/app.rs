@@ -10,7 +10,7 @@ use std::{
 use gpui::*;
 use gpui_component::{
     TitleBar,
-    dock::{DockArea, DockItem},
+    dock::{DockArea, DockItem, DockPlacement},
     label::Label,
     select::{Select, SelectEvent, SelectState},
 };
@@ -19,7 +19,9 @@ use tracing::{error, info};
 
 use crate::{
     components::{
-        log_viewer::LogViewerPanel, pod_detail::PodDetailPanel, pod_list::PodListPanel,
+        log_viewer::LogViewerPanel,
+        pod_detail::PodDetailPanel,
+        pod_list::{PodListPanel, PodSelected},
     },
     kube_runtime,
 };
@@ -34,6 +36,8 @@ enum KubeEvent {
     Connected(KubeClient),
     Namespace(String),
     PodList(Vec<PodSummary>),
+    PodDetail(kubescope_core::models::PodDetail),
+    PodDetailError(String),
     Error(String),
 }
 
@@ -47,6 +51,7 @@ pub struct Workspace {
     context_select: Entity<SelectState<Vec<SharedString>>>,
     ns_select: Entity<SelectState<Vec<SharedString>>>,
     pod_list_panel: Entity<PodListPanel>,
+    pod_detail_panel: Entity<PodDetailPanel>,
     /// Full unfiltered pod list from the watcher.
     all_pods: Vec<PodSummary>,
     /// Sorted list of namespace names seen from the current cluster.
@@ -108,7 +113,7 @@ impl Workspace {
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
 
         let center = DockItem::tab(pod_list_panel.clone(), &weak_dock, window, cx);
-        let right_panel = DockItem::tab(pod_detail_panel, &weak_dock, window, cx);
+        let right_panel = DockItem::tab(pod_detail_panel.clone(), &weak_dock, window, cx);
         let bottom_panel = DockItem::tab(log_panel, &weak_dock, window, cx);
 
         dock_area.update(cx, |dock, cx| {
@@ -145,6 +150,16 @@ impl Workspace {
         )
         .detach();
 
+        // ── Subscribe to pod row selection ───────────────────────────────────
+        cx.subscribe_in(
+            &pod_list_panel,
+            window,
+            |this, _, event: &PodSelected, _window, cx| {
+                this.on_pod_selected(&event.name, &event.namespace, cx);
+            },
+        )
+        .detach();
+
         // ── Start GPUI poll loop ──────────────────────────────────────────────
         let poll_task = Self::start_poll_loop(events.clone(), window, cx);
 
@@ -153,6 +168,7 @@ impl Workspace {
             context_select,
             ns_select,
             pod_list_panel,
+            pod_detail_panel,
             all_pods: Vec::new(),
             namespaces: Vec::new(),
             active_namespace: SharedString::from("All"),
@@ -231,6 +247,20 @@ impl Workspace {
                 self.all_pods = pods;
                 self.apply_namespace_filter(cx);
             }
+            KubeEvent::PodDetail(detail) => {
+                self.pod_detail_panel.update(cx, |panel, cx| {
+                    panel.set_detail(detail);
+                    cx.notify();
+                });
+                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
+                    self.dock_area.update(cx, |dock, cx| {
+                        dock.toggle_dock(DockPlacement::Right, window, cx);
+                    });
+                }
+            }
+            KubeEvent::PodDetailError(msg) => {
+                error!("pod detail fetch error: {msg}");
+            }
             KubeEvent::Error(msg) => {
                 error!("kube error: {msg}");
             }
@@ -257,6 +287,10 @@ impl Workspace {
             panel.table.update(cx, |table, _| {
                 table.delegate_mut().pods.clear();
             });
+        });
+        self.pod_detail_panel.update(cx, |panel, cx| {
+            panel.clear_detail();
+            cx.notify();
         });
 
         let items = self.ns_items();
@@ -318,6 +352,31 @@ impl Workspace {
                         .lock()
                         .unwrap()
                         .push_back(KubeEvent::Error(e.to_string()));
+                }
+            }
+        });
+    }
+
+    /// Fetch pod detail + events asynchronously when a pod row is clicked.
+    fn on_pod_selected(&mut self, name: &str, namespace: &str, _cx: &mut Context<Self>) {
+        let Some(client) = self.kube_client.clone() else { return };
+        let events = self.events.clone();
+        let name = name.to_string();
+        let namespace = namespace.to_string();
+
+        kube_runtime::handle().spawn(async move {
+            match client.fetch_pod_detail(&namespace, &name).await {
+                Ok(mut detail) => {
+                    if let Ok(pod_events) = client.fetch_pod_events(&namespace, &name).await {
+                        detail.events = pod_events;
+                    }
+                    events.lock().unwrap().push_back(KubeEvent::PodDetail(detail));
+                }
+                Err(e) => {
+                    events
+                        .lock()
+                        .unwrap()
+                        .push_back(KubeEvent::PodDetailError(e.to_string()));
                 }
             }
         });
