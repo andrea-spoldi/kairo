@@ -47,6 +47,8 @@ pub struct Workspace {
     context_select: Entity<SelectState<Vec<SharedString>>>,
     ns_select: Entity<SelectState<Vec<SharedString>>>,
     pod_list_panel: Entity<PodListPanel>,
+    /// Full unfiltered pod list from the watcher.
+    all_pods: Vec<PodSummary>,
     /// Sorted list of namespace names seen from the current cluster.
     namespaces: Vec<SharedString>,
     active_namespace: SharedString,
@@ -134,9 +136,10 @@ impl Workspace {
         cx.subscribe_in(
             &ns_select,
             window,
-            |this, _, event: &SelectEvent<Vec<SharedString>>, _window, _cx| {
+            |this, _, event: &SelectEvent<Vec<SharedString>>, _window, cx| {
                 if let SelectEvent::Confirm(Some(ns)) = event {
                     this.active_namespace = ns.clone();
+                    this.apply_namespace_filter(cx);
                 }
             },
         )
@@ -150,6 +153,7 @@ impl Workspace {
             context_select,
             ns_select,
             pod_list_panel,
+            all_pods: Vec::new(),
             namespaces: Vec::new(),
             active_namespace: SharedString::from("All"),
             active_context: current_ctx.clone(),
@@ -224,11 +228,8 @@ impl Workspace {
                 }
             }
             KubeEvent::PodList(pods) => {
-                self.pod_list_panel.update(cx, |panel, cx| {
-                    panel.table.update(cx, |table, _| {
-                        table.delegate_mut().pods = pods;
-                    });
-                });
+                self.all_pods = pods;
+                self.apply_namespace_filter(cx);
             }
             KubeEvent::Error(msg) => {
                 error!("kube error: {msg}");
@@ -247,6 +248,7 @@ impl Workspace {
         self.abort_flag = abort_flag.clone();
 
         // Reset namespace and pod state.
+        self.all_pods.clear();
         self.namespaces.clear();
         self.active_namespace = SharedString::from("All");
         self.active_context = Some(SharedString::from(context.clone()));
@@ -318,6 +320,24 @@ impl Workspace {
                         .push_back(KubeEvent::Error(e.to_string()));
                 }
             }
+        });
+    }
+
+    /// Push the namespace-filtered pod list to the table.
+    fn apply_namespace_filter(&mut self, cx: &mut Context<Self>) {
+        let filtered: Vec<PodSummary> = if self.active_namespace.as_ref() == "All" {
+            self.all_pods.clone()
+        } else {
+            self.all_pods
+                .iter()
+                .filter(|p| p.namespace.as_str() == self.active_namespace.as_ref())
+                .cloned()
+                .collect()
+        };
+        self.pod_list_panel.update(cx, |panel, cx| {
+            panel.table.update(cx, |table, _| {
+                table.delegate_mut().pods = filtered;
+            });
         });
     }
 
