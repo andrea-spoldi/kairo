@@ -32,7 +32,7 @@ fn main() {
                         ..Default::default()
                     },
                     |window, cx| {
-                        let view = cx.new(|_| AppRoot);
+                        let view = cx.new(|cx| AppRoot::new(window, cx));
                         let view: AnyView = view.into();
                         cx.new(|cx| Root::new(view, window, cx))
                     },

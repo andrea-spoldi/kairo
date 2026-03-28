@@ -14,5 +14,6 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 kubescope-core = { path = "../kubescope-core" }
 anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"

@@ -2,38 +2,20 @@
 use gpui::Hsla;
 
 /// Dark background color.
-pub const BACKGROUND: Hsla = Hsla {
-    h: 0.0,
-    s: 0.0,
-    l: 0.09,
-    a: 1.0,
-};
+pub const BACKGROUND: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.09, a: 1.0 };
 
 /// Status colors for pod states.
-pub const STATUS_RUNNING: Hsla = Hsla {
-    h: 0.36,
-    s: 0.65,
-    l: 0.45,
-    a: 1.0,
-};
+pub const STATUS_RUNNING: Hsla = Hsla { h: 0.36, s: 0.65, l: 0.45, a: 1.0 };
+pub const STATUS_PENDING: Hsla = Hsla { h: 0.11, s: 0.80, l: 0.55, a: 1.0 };
+pub const STATUS_FAILED: Hsla = Hsla { h: 0.0, s: 0.70, l: 0.50, a: 1.0 };
+pub const STATUS_SUCCEEDED: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.55, a: 1.0 };
 
-pub const STATUS_PENDING: Hsla = Hsla {
-    h: 0.11,
-    s: 0.80,
-    l: 0.55,
-    a: 1.0,
-};
-
-pub const STATUS_FAILED: Hsla = Hsla {
-    h: 0.0,
-    s: 0.70,
-    l: 0.50,
-    a: 1.0,
-};
-
-pub const STATUS_SUCCEEDED: Hsla = Hsla {
-    h: 0.0,
-    s: 0.0,
-    l: 0.55,
-    a: 1.0,
-};
+/// Map a pod status string to its display color.
+pub fn status_color(status: &str) -> Hsla {
+    match status {
+        "Running" => STATUS_RUNNING,
+        "Pending" | "ContainerCreating" | "Initializing" => STATUS_PENDING,
+        "Succeeded" | "Completed" => STATUS_SUCCEEDED,
+        _ => STATUS_FAILED, // CrashLoopBackOff, Error, Terminating, OOMKilled, …
+    }
+}

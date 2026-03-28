@@ -11,6 +11,10 @@ pub enum CoreError {
     #[error("kube error: {0}")]
     Kube(#[from] kube::Error),
 
+    /// A watcher stream error.
+    #[error("watcher error: {0}")]
+    Watcher(#[from] kube::runtime::watcher::Error),
+
     /// The requested context does not exist in the kubeconfig.
     #[error("context not found: {0}")]
     ContextNotFound(String),
