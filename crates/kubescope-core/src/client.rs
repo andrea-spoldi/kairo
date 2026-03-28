@@ -1,5 +1,9 @@
+use k8s_openapi::api::core::v1::{Event, Pod};
+use kube::api::ListParams;
 use kube::config::{Config, KubeConfigOptions, Kubeconfig};
+use kube::Api;
 
+use crate::models::{PodDetail, PodEvent};
 use crate::CoreError;
 
 impl std::fmt::Debug for KubeClient {
@@ -69,5 +73,30 @@ impl KubeClient {
     pub fn current_context() -> Result<Option<String>, CoreError> {
         let kubeconfig = Kubeconfig::read()?;
         Ok(kubeconfig.current_context)
+    }
+
+    /// Fetch full pod detail for the given pod name in a namespace.
+    pub async fn fetch_pod_detail(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<PodDetail, CoreError> {
+        let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
+        let pod = api.get(name).await?;
+        Ok(PodDetail::from(pod))
+    }
+
+    /// Fetch Kubernetes events related to a specific pod.
+    pub async fn fetch_pod_events(
+        &self,
+        namespace: &str,
+        pod_name: &str,
+    ) -> Result<Vec<PodEvent>, CoreError> {
+        let api: Api<Event> = Api::namespaced(self.client.clone(), namespace);
+        let params = ListParams::default().fields(
+            &format!("involvedObject.name={pod_name},involvedObject.kind=Pod"),
+        );
+        let event_list = api.list(&params).await?;
+        Ok(event_list.into_iter().map(PodEvent::from).collect())
     }
 }
