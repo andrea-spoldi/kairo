@@ -3532,6 +3532,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "kubescope-core",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
