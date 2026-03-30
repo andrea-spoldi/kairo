@@ -17,9 +17,11 @@ use gpui_component::{
 use kubescope_core::{KubeClient, models::PodSummary, watchers::NamespaceWatcher};
 use tracing::{error, info};
 
+use kubescope_core::logs::LogStream;
+
 use crate::{
     components::{
-        log_viewer::LogViewerPanel,
+        log_viewer::{ContainerSelected, LogViewerPanel},
         pod_detail::PodDetailPanel,
         pod_list::{PodListPanel, PodSelected},
     },
@@ -38,6 +40,8 @@ enum KubeEvent {
     PodList(Vec<PodSummary>),
     PodDetail(kubescope_core::models::PodDetail),
     PodDetailError(String),
+    LogLine(String),
+    LogError(String),
     Error(String),
 }
 
@@ -52,6 +56,7 @@ pub struct Workspace {
     ns_select: Entity<SelectState<Vec<SharedString>>>,
     pod_list_panel: Entity<PodListPanel>,
     pod_detail_panel: Entity<PodDetailPanel>,
+    log_panel: Entity<LogViewerPanel>,
     /// Full unfiltered pod list from the watcher.
     all_pods: Vec<PodSummary>,
     /// Sorted list of namespace names seen from the current cluster.
@@ -63,6 +68,12 @@ pub struct Workspace {
     events: EventQueue,
     /// Set to true to signal the running watcher/receiver to stop.
     abort_flag: Arc<AtomicBool>,
+    /// Set to true to abort the active log stream.
+    log_abort: Arc<AtomicBool>,
+    /// Pod name currently streamed in the log panel.
+    active_log_pod: Option<String>,
+    /// Namespace of the pod currently streamed in the log panel.
+    active_log_ns: Option<String>,
     /// GPUI task that polls `events` on a timer; kept alive by storing it.
     _poll_task: Task<()>,
 }
@@ -114,7 +125,7 @@ impl Workspace {
 
         let center = DockItem::tab(pod_list_panel.clone(), &weak_dock, window, cx);
         let right_panel = DockItem::tab(pod_detail_panel.clone(), &weak_dock, window, cx);
-        let bottom_panel = DockItem::tab(log_panel, &weak_dock, window, cx);
+        let bottom_panel = DockItem::tab(log_panel.clone(), &weak_dock, window, cx);
 
         dock_area.update(cx, |dock, cx| {
             dock.set_center(center, window, cx);
@@ -124,6 +135,7 @@ impl Workspace {
 
         let events: EventQueue = Arc::new(Mutex::new(VecDeque::new()));
         let abort_flag = Arc::new(AtomicBool::new(false));
+        let log_abort = Arc::new(AtomicBool::new(false));
 
         // ── Subscribe to context selection ────────────────────────────────────
         cx.subscribe_in(
@@ -160,6 +172,23 @@ impl Workspace {
         )
         .detach();
 
+        // ── Subscribe to container tab selection in log panel ─────────────────
+        cx.subscribe_in(
+            &log_panel,
+            window,
+            |this, _, event: &ContainerSelected, _window, _cx| {
+                let Some(client) = this.kube_client.clone() else { return };
+                // Determine the current pod from the pod label stored in the panel.
+                // We re-use the info cached on on_pod_selected call.
+                let pod = this.active_log_pod.clone();
+                let ns = this.active_log_ns.clone();
+                if let (Some(pod), Some(ns)) = (pod, ns) {
+                    this.start_log_stream(client, &ns, &pod, &event.name);
+                }
+            },
+        )
+        .detach();
+
         // ── Start GPUI poll loop ──────────────────────────────────────────────
         let poll_task = Self::start_poll_loop(events.clone(), window, cx);
 
@@ -169,6 +198,7 @@ impl Workspace {
             ns_select,
             pod_list_panel,
             pod_detail_panel,
+            log_panel,
             all_pods: Vec::new(),
             namespaces: Vec::new(),
             active_namespace: SharedString::from("All"),
@@ -176,6 +206,9 @@ impl Workspace {
             kube_client: None,
             events,
             abort_flag,
+            log_abort,
+            active_log_pod: None,
+            active_log_ns: None,
             _poll_task: poll_task,
         };
 
@@ -248,6 +281,12 @@ impl Workspace {
                 self.apply_namespace_filter(cx);
             }
             KubeEvent::PodDetail(detail) => {
+                // Collect container names before moving detail.
+                let containers: Vec<String> =
+                    detail.containers.iter().map(|c| c.name.clone()).collect();
+                let pod_name = detail.summary.name.clone();
+                let namespace = detail.summary.namespace.clone();
+
                 self.pod_detail_panel.update(cx, |panel, cx| {
                     panel.set_detail(detail);
                     cx.notify();
@@ -257,14 +296,75 @@ impl Workspace {
                         dock.toggle_dock(DockPlacement::Right, window, cx);
                     });
                 }
+
+                // Start log streaming for first container.
+                if let Some(first_container) = containers.first().cloned() {
+                    self.active_log_pod = Some(pod_name.clone());
+                    self.active_log_ns = Some(namespace.clone());
+                    self.log_panel.update(cx, |panel, cx| {
+                        panel.set_pod(pod_name.clone(), namespace.clone(), containers, cx);
+                    });
+                    if let Some(client) = self.kube_client.clone() {
+                        self.start_log_stream(client, &namespace, &pod_name, &first_container);
+                    }
+                    if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+                        self.dock_area.update(cx, |dock, cx| {
+                            dock.toggle_dock(DockPlacement::Bottom, window, cx);
+                        });
+                    }
+                }
             }
             KubeEvent::PodDetailError(msg) => {
                 error!("pod detail fetch error: {msg}");
+            }
+            KubeEvent::LogLine(line) => {
+                self.log_panel.update(cx, |panel, cx| {
+                    panel.push_line(line, cx);
+                });
+            }
+            KubeEvent::LogError(msg) => {
+                error!("log stream error: {msg}");
             }
             KubeEvent::Error(msg) => {
                 error!("kube error: {msg}");
             }
         }
+    }
+
+    // ── Log stream ────────────────────────────────────────────────────────────
+
+    fn start_log_stream(&mut self, client: KubeClient, namespace: &str, pod: &str, container: &str) {
+        // Stop any running log stream.
+        self.log_abort.store(true, Ordering::SeqCst);
+        let log_abort = Arc::new(AtomicBool::new(false));
+        self.log_abort = log_abort.clone();
+
+        let events = self.events.clone();
+        let namespace = namespace.to_string();
+        let pod = pod.to_string();
+        let container = container.to_string();
+
+        kube_runtime::handle().spawn(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+            let _handle = LogStream::start(client, &namespace, &pod, &container, tx);
+            while let Some(result) = rx.recv().await {
+                if log_abort.load(Ordering::SeqCst) {
+                    break;
+                }
+                match result {
+                    Ok(line) => {
+                        events.lock().unwrap().push_back(KubeEvent::LogLine(line));
+                    }
+                    Err(e) => {
+                        events
+                            .lock()
+                            .unwrap()
+                            .push_back(KubeEvent::LogError(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     // ── Context switching ──────────────────────────────────────────────────────
@@ -291,6 +391,14 @@ impl Workspace {
         self.pod_detail_panel.update(cx, |panel, cx| {
             panel.clear_detail();
             cx.notify();
+        });
+        // Stop log stream and clear log panel.
+        self.log_abort.store(true, Ordering::SeqCst);
+        self.log_abort = Arc::new(AtomicBool::new(false));
+        self.active_log_pod = None;
+        self.active_log_ns = None;
+        self.log_panel.update(cx, |panel, cx| {
+            panel.clear(cx);
         });
 
         let items = self.ns_items();
