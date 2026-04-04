@@ -24,12 +24,15 @@ pub struct PodSummary {
     pub age: String,
     /// Node the pod is scheduled on.
     pub node: String,
+    /// Pod labels, used for client-side label-selector filtering.
+    pub labels: BTreeMap<String, String>,
 }
 
 impl From<Pod> for PodSummary {
     fn from(pod: Pod) -> Self {
         let name = pod.metadata.name.clone().unwrap_or_default();
         let namespace = pod.metadata.namespace.clone().unwrap_or_default();
+        let labels = pod.metadata.labels.clone().unwrap_or_default();
 
         let container_statuses = pod
             .status
@@ -54,7 +57,7 @@ impl From<Pod> for PodSummary {
             .and_then(|s| s.node_name.clone())
             .unwrap_or_default();
 
-        PodSummary { name, namespace, status, ready, restarts, age, node }
+        PodSummary { name, namespace, status, ready, restarts, age, node, labels }
     }
 }
 
