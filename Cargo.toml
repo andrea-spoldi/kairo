@@ -7,6 +7,12 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
+version = "0.1.0"
+authors = ["Andrea Spoldi"]
+description = "Native Rust Kubernetes IDE — GPUI + kube-rs, no Electron"
+homepage = "https://github.com/andrea-spoldi/kubescope_"
+repository = "https://github.com/andrea-spoldi/kubescope_"
+license = "MIT"
 
 [profile.dev]
 opt-level = 0
@@ -16,3 +22,8 @@ split-debuginfo = "unpacked"
 [profile.dev.package]
 gpui = { opt-level = 3 }
 gpui_platform = { opt-level = 3 }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
