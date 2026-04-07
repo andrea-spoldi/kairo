@@ -384,9 +384,7 @@ impl Workspace {
         self.active_context = Some(SharedString::from(context.clone()));
         self.kube_client = None;
         self.pod_list_panel.update(cx, |panel, cx| {
-            panel.table.update(cx, |table, _| {
-                table.delegate_mut().pods.clear();
-            });
+            panel.set_pods(vec![], cx);
         });
         self.pod_detail_panel.update(cx, |panel, cx| {
             panel.clear_detail();
@@ -490,7 +488,7 @@ impl Workspace {
         });
     }
 
-    /// Push the namespace-filtered pod list to the table.
+    /// Push the namespace-filtered pod list to the panel (which re-applies search filters).
     fn apply_namespace_filter(&mut self, cx: &mut Context<Self>) {
         let filtered: Vec<PodSummary> = if self.active_namespace.as_ref() == "All" {
             self.all_pods.clone()
@@ -502,9 +500,7 @@ impl Workspace {
                 .collect()
         };
         self.pod_list_panel.update(cx, |panel, cx| {
-            panel.table.update(cx, |table, _| {
-                table.delegate_mut().pods = filtered;
-            });
+            panel.set_pods(filtered, cx);
         });
     }
 
