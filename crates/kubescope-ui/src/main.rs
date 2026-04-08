@@ -9,6 +9,8 @@ use gpui::*;
 use gpui_component::{Root, TitleBar};
 use gpui_component_assets::Assets;
 
+use actions::{ConfirmSelection, FocusSearch, NavigateDown, NavigateUp, ToggleGrouping};
+
 fn main() {
     tracing_subscriber::fmt::init();
 
@@ -30,6 +32,17 @@ fn main() {
                 cx,
             );
             cx.activate(true);
+
+            // Pod list keyboard navigation (only fires when PodList has key context focus).
+            cx.bind_keys([
+                KeyBinding::new("j",      NavigateDown,      Some("PodList")),
+                KeyBinding::new("k",      NavigateUp,        Some("PodList")),
+                KeyBinding::new("down",   NavigateDown,      Some("PodList")),
+                KeyBinding::new("up",     NavigateUp,        Some("PodList")),
+                KeyBinding::new("return", ConfirmSelection,  Some("PodList")),
+                KeyBinding::new("/",      FocusSearch,       Some("PodList")),
+                KeyBinding::new("g",      ToggleGrouping,    Some("PodList")),
+            ]);
 
             cx.spawn(async move |cx| {
                 cx.open_window(

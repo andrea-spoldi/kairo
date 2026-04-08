@@ -26,6 +26,10 @@ pub struct PodSummary {
     pub node: String,
     /// Pod labels, used for client-side label-selector filtering.
     pub labels: BTreeMap<String, String>,
+    /// Direct owner kind (ReplicaSet, DaemonSet, StatefulSet, Job, …). Empty if standalone.
+    pub owner_kind: String,
+    /// Name of the owning object. Empty if standalone.
+    pub owner_name: String,
 }
 
 impl From<Pod> for PodSummary {
@@ -33,6 +37,14 @@ impl From<Pod> for PodSummary {
         let name = pod.metadata.name.clone().unwrap_or_default();
         let namespace = pod.metadata.namespace.clone().unwrap_or_default();
         let labels = pod.metadata.labels.clone().unwrap_or_default();
+
+        let (owner_kind, owner_name) = pod
+            .metadata
+            .owner_references
+            .as_deref()
+            .and_then(|refs| refs.first())
+            .map(|r| (r.kind.clone(), r.name.clone()))
+            .unwrap_or_default();
 
         let container_statuses = pod
             .status
@@ -57,7 +69,7 @@ impl From<Pod> for PodSummary {
             .and_then(|s| s.node_name.clone())
             .unwrap_or_default();
 
-        PodSummary { name, namespace, status, ready, restarts, age, node, labels }
+        PodSummary { name, namespace, status, ready, restarts, age, node, labels, owner_kind, owner_name }
     }
 }
 

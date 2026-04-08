@@ -10,7 +10,7 @@ use std::{
 use gpui::*;
 use gpui_component::{
     TitleBar,
-    dock::{DockArea, DockItem, DockPlacement},
+    dock::{DockArea, DockItem, DockPlacement, PanelView},
     h_flex,
     label::Label,
     select::{Select, SelectEvent, SelectState},
@@ -27,6 +27,7 @@ use kubescope_core::logs::LogStream;
 use crate::{
     components::{
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
+        event_feed::EventFeedPanel,
         log_viewer::{ContainerSelected, LogViewerPanel},
         pod_detail::PodDetailPanel,
         pod_list::{PodListPanel, PodSelected},
@@ -66,6 +67,7 @@ pub struct Workspace {
     context_select: Entity<SelectState<Vec<SharedString>>>,
     ns_select: Entity<SelectState<Vec<SharedString>>>,
     health_panel: Entity<ClusterHealthPanel>,
+    event_feed: Entity<EventFeedPanel>,
     pod_list_panel: Entity<PodListPanel>,
     pod_detail_panel: Entity<PodDetailPanel>,
     log_panel: Entity<LogViewerPanel>,
@@ -132,12 +134,22 @@ impl Workspace {
         let weak_dock = dock_area.downgrade();
 
         let health_panel = cx.new(|cx| ClusterHealthPanel::new(cx));
+        let event_feed = cx.new(|cx| EventFeedPanel::new(cx));
         let pod_list_panel = cx.new(|cx| PodListPanel::new(window, cx));
         let pod_detail_panel = cx.new(|cx| PodDetailPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
 
         let left_panel = DockItem::tab(health_panel.clone(), &weak_dock, window, cx);
-        let center = DockItem::tab(pod_list_panel.clone(), &weak_dock, window, cx);
+        // Center dock: Pods tab + Events tab.
+        let center = DockItem::tabs(
+            vec![
+                Arc::new(pod_list_panel.clone()) as Arc<dyn PanelView>,
+                Arc::new(event_feed.clone()) as Arc<dyn PanelView>,
+            ],
+            &weak_dock,
+            window,
+            cx,
+        );
         let right_panel = DockItem::tab(pod_detail_panel.clone(), &weak_dock, window, cx);
         let bottom_panel = DockItem::tab(log_panel.clone(), &weak_dock, window, cx);
 
@@ -230,6 +242,7 @@ impl Workspace {
             context_select,
             ns_select,
             health_panel,
+            event_feed,
             pod_list_panel,
             pod_detail_panel,
             log_panel,
@@ -365,7 +378,10 @@ impl Workspace {
             }
             KubeEvent::WarningEvent(ev) => {
                 self.health_panel.update(cx, |panel, cx| {
-                    panel.push_warning(ev, cx);
+                    panel.push_warning(ev.clone(), cx);
+                });
+                self.event_feed.update(cx, |feed, cx| {
+                    feed.push_event(ev, cx);
                 });
             }
             KubeEvent::Error(msg) => {
@@ -443,6 +459,9 @@ impl Workspace {
         });
         self.health_panel.update(cx, |panel, cx| {
             panel.clear(cx);
+        });
+        self.event_feed.update(cx, |feed, cx| {
+            feed.clear(cx);
         });
 
         let items = self.ns_items();
