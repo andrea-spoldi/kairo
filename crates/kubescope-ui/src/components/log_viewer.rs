@@ -4,6 +4,8 @@ use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 
+use crate::theme::{ACCENT, BORDER, HOVER_BG, SELECTED_BG, TEXT_PRIMARY, TEXT_SECONDARY};
+
 const MAX_LINES: usize = 5_000;
 
 /// Emitted when the user selects a different container tab.
@@ -132,12 +134,13 @@ impl Render for LogViewerPanel {
             // ── Toolbar ───────────────────────────────────────────────────────
             .child(
                 h_flex()
-                    .px_2()
-                    .py_1()
+                    .px_3()
+                    .py_2()
                     .gap_2()
                     .border_b_1()
-                    .border_color(gpui::rgb(0x3a3a3a))
+                    .border_color(BORDER)
                     .flex_shrink_0()
+                    // Pod label
                     .child(
                         Label::new(
                             self.pod_label
@@ -145,28 +148,48 @@ impl Render for LogViewerPanel {
                                 .map(SharedString::from)
                                 .unwrap_or_else(|| SharedString::from("No pod selected")),
                         )
-                        .text_sm(),
+                        .text_sm()
+                        .text_color(TEXT_SECONDARY),
                     )
                     .child(div().flex_1())
-                    // Container tabs
+                    // Container tabs — color + font-weight + bottom accent on selected; hover on unselected
                     .children(self.containers.iter().enumerate().map(|(ix, name)| {
                         let selected = ix == self.selected_container_ix;
-                        div()
-                            .id(("container-tab", ix))
-                            .px_2()
-                            .py_px()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(if selected {
-                                gpui::rgb(0x3a3a8c)
-                            } else {
-                                gpui::rgb(0x2a2a2a)
-                            })
-                            .child(name.clone())
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                                this.select_container(ix, cx);
-                            }))
+                        let listener = cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                            this.select_container(ix, cx);
+                        });
+                        let name_child = name.clone();
+                        if selected {
+                            div()
+                                .id(("container-tab", ix))
+                                .px_3()
+                                .py(px(3.))
+                                .rounded_md()
+                                .text_sm()
+                                .cursor_pointer()
+                                .bg(SELECTED_BG)
+                                .text_color(TEXT_PRIMARY)
+                                .font_weight(FontWeight::MEDIUM)
+                                .border_b_2()
+                                .border_color(ACCENT)
+                                .child(name_child)
+                                .on_click(listener)
+                                .into_any_element()
+                        } else {
+                            div()
+                                .id(("container-tab", ix))
+                                .px_3()
+                                .py(px(3.))
+                                .rounded_md()
+                                .text_sm()
+                                .cursor_pointer()
+                                .text_color(TEXT_SECONDARY)
+                                .font_weight(FontWeight::NORMAL)
+                                .hover(|s| s.bg(HOVER_BG))
+                                .child(name_child)
+                                .on_click(listener)
+                                .into_any_element()
+                        }
                     }))
                     // Pause / Resume
                     .child(
@@ -187,7 +210,7 @@ impl Render for LogViewerPanel {
                             })),
                     ),
             )
-            // ── Log lines ─────────────────────────────────────────────────────
+            // ── Log lines — monospace text_sm for comfortable reading ─────────
             .child(
                 uniform_list(
                     "log-lines",
@@ -197,8 +220,10 @@ impl Render for LogViewerPanel {
                             .map(|ix| {
                                 div()
                                     .font_family("monospace")
-                                    .text_xs()
-                                    .text_color(gpui::rgb(0xd4d4d4))
+                                    .text_sm()
+                                    .text_color(TEXT_PRIMARY)
+                                    .px_3()
+                                    .whitespace_nowrap()
                                     .child(lines[ix].clone())
                             })
                             .collect()

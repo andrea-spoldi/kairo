@@ -5,7 +5,10 @@ use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
 use kubescope_core::models::PodDetail;
 
-use crate::theme::{status_color, STATUS_FAILED};
+use crate::theme::{
+    status_color, status_symbol, BORDER, STATUS_FAILED, SURFACE,
+    TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+};
 
 /// Right panel — pod detail view.
 pub struct PodDetailPanel {
@@ -56,7 +59,7 @@ impl Render for PodDetailPanel {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(hsla(0., 0., 0.5, 1.))
+                .text_color(TEXT_MUTED)
                 .child("Select a pod to view details")
                 .into_any_element();
         };
@@ -66,8 +69,8 @@ impl Render for PodDetailPanel {
             .flex()
             .flex_col()
             .overflow_y_scrollbar()
-            .p_3()
-            .gap_3()
+            .p_4()
+            .gap_4()
             .child(render_header(&detail))
             .child(render_metadata(&detail))
             .child(render_containers(&detail))
@@ -76,35 +79,56 @@ impl Render for PodDetailPanel {
     }
 }
 
-// ── Section renderers (free functions to avoid &mut self borrow conflicts) ───
+// ── Section renderers ─────────────────────────────────────────────────────────
 
 fn render_header(detail: &PodDetail) -> AnyElement {
     let s = &detail.summary;
     let color = status_color(&s.status);
+    let symbol = status_symbol(&s.status);
 
     div()
         .flex()
         .flex_col()
-        .gap_1()
-        .child(Label::new(s.name.clone()).text_size(rems(1.1)))
+        .gap_2()
+        // Pod name — largest text, semibold, truncated if necessary
         .child(
-            h_flex()
-                .gap_2()
+            div()
+                .w_full()
+                .overflow_hidden()
                 .child(
-                    h_flex()
-                        .gap_1()
-                        .child(div().w_2().h_2().rounded_full().bg(color))
-                        .child(Label::new(s.status.clone()).text_size(rems(0.8))),
-                )
-                .child(Label::new(format!("ns: {}", s.namespace)).text_size(rems(0.8)))
-                .child(Label::new(format!("age: {}", s.age)).text_size(rems(0.8)))
-                .child(Label::new(format!("node: {}", s.node)).text_size(rems(0.8))),
+                    Label::new(s.name.clone())
+                        .text_size(rems(1.2))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(TEXT_PRIMARY),
+                ),
         )
+        // Status row — colored symbol + text
         .child(
             h_flex()
-                .gap_2()
-                .child(Label::new(format!("Ready: {}", s.ready)).text_size(rems(0.8)))
-                .child(Label::new(format!("Restarts: {}", s.restarts)).text_size(rems(0.8))),
+                .gap(px(6.))
+                .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
+                .child(
+                    Label::new(format!("{symbol} {}", s.status))
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(color),
+                ),
+        )
+        // Metadata row — namespace / age / node
+        .child(
+            h_flex()
+                .gap_3()
+                .flex_wrap()
+                .child(Label::new(format!("ns: {}", s.namespace)).text_sm().text_color(TEXT_SECONDARY))
+                .child(Label::new(format!("age: {}", s.age)).text_sm().text_color(TEXT_MUTED))
+                .child(Label::new(format!("node: {}", s.node)).text_sm().text_color(TEXT_SECONDARY)),
+        )
+        // Ready / restarts row
+        .child(
+            h_flex()
+                .gap_3()
+                .child(Label::new(format!("Ready: {}", s.ready)).text_sm().text_color(TEXT_SECONDARY))
+                .child(Label::new(format!("Restarts: {}", s.restarts)).text_sm().text_color(TEXT_SECONDARY)),
         )
         .into_any_element()
 }
@@ -113,7 +137,7 @@ fn render_metadata(detail: &PodDetail) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap_2()
+        .gap_3()
         .child(render_kv_section("Labels", &detail.labels))
         .child(render_kv_section("Annotations", &detail.annotations))
         .into_any_element()
@@ -122,22 +146,23 @@ fn render_metadata(detail: &PodDetail) -> AnyElement {
 fn render_kv_section(title: &str, map: &std::collections::BTreeMap<String, String>) -> AnyElement {
     let mut section = div().flex().flex_col().gap_1().child(
         Label::new(title.to_string())
-            .text_size(rems(0.85))
-            .text_color(hsla(0., 0., 0.7, 1.)),
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(TEXT_HEADING),
     );
 
     if map.is_empty() {
         section = section.child(
             Label::new("  (none)")
-                .text_size(rems(0.75))
-                .text_color(hsla(0., 0., 0.45, 1.)),
+                .text_sm()
+                .text_color(TEXT_MUTED),
         );
     } else {
         for (k, v) in map {
             section = section.child(
                 Label::new(format!("  {k}={v}"))
-                    .text_size(rems(0.75))
-                    .text_color(hsla(0., 0., 0.55, 1.)),
+                    .text_sm()
+                    .text_color(TEXT_SECONDARY),
             );
         }
     }
@@ -146,54 +171,54 @@ fn render_kv_section(title: &str, map: &std::collections::BTreeMap<String, Strin
 }
 
 fn render_containers(detail: &PodDetail) -> AnyElement {
-    let mut section = div().flex().flex_col().gap_1().child(
+    let mut section = div().flex().flex_col().gap_2().child(
         Label::new("Containers")
-            .text_size(rems(0.85))
-            .text_color(hsla(0., 0., 0.7, 1.)),
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(TEXT_HEADING),
     );
 
     for c in &detail.containers {
-        let state_color = match c.state.as_str() {
-            "Running" => status_color("Running"),
-            _ => STATUS_FAILED,
-        };
+        let state_color = status_color(&c.state);
+        let state_symbol = status_symbol(&c.state);
 
         section = section.child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.))
-                .px_2()
-                .py_1()
-                .rounded(px(4.))
+                .gap(px(4.))
+                .px_3()
+                .py_2()
+                .rounded(px(6.))
                 .border_1()
-                .border_color(hsla(0., 0., 0.2, 1.))
+                .border_color(BORDER)
+                .bg(SURFACE)
+                // Container name + state dot
                 .child(
                     h_flex()
-                        .gap_1()
+                        .gap(px(6.))
+                        .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(state_color))
                         .child(
-                            div()
-                                .w(px(6.))
-                                .h(px(6.))
-                                .rounded_full()
-                                .bg(state_color),
-                        )
-                        .child(Label::new(c.name.clone()).text_size(rems(0.8))),
+                            Label::new(format!("{state_symbol} {}", c.name))
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(TEXT_PRIMARY),
+                        ),
                 )
+                // Image
                 .child(
                     Label::new(c.image.clone())
-                        .text_size(rems(0.7))
-                        .text_color(hsla(0., 0., 0.5, 1.)),
+                        .text_sm()
+                        .text_color(TEXT_MUTED),
                 )
+                // Stats
                 .child(
-                    h_flex().gap_2().child(
-                        Label::new(format!(
-                            "ready: {} | restarts: {} | {}",
-                            c.ready, c.restart_count, c.state
-                        ))
-                        .text_size(rems(0.7))
-                        .text_color(hsla(0., 0., 0.5, 1.)),
-                    ),
+                    Label::new(format!(
+                        "ready: {} | restarts: {} | {}",
+                        c.ready, c.restart_count, c.state
+                    ))
+                    .text_sm()
+                    .text_color(TEXT_SECONDARY),
                 ),
         );
     }
@@ -202,31 +227,32 @@ fn render_containers(detail: &PodDetail) -> AnyElement {
 }
 
 fn render_events(detail: &PodDetail) -> AnyElement {
-    let mut section = div().flex().flex_col().gap_1().child(
+    let mut section = div().flex().flex_col().gap_2().child(
         Label::new("Events")
-            .text_size(rems(0.85))
-            .text_color(hsla(0., 0., 0.7, 1.)),
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(TEXT_HEADING),
     );
 
     if detail.events.is_empty() {
         section = section.child(
             Label::new("  No events")
-                .text_size(rems(0.75))
-                .text_color(hsla(0., 0., 0.45, 1.)),
+                .text_sm()
+                .text_color(TEXT_MUTED),
         );
     } else {
         for ev in &detail.events {
-            let color = if ev.event_type == "Warning" {
+            let type_color = if ev.event_type == "Warning" {
                 STATUS_FAILED
             } else {
-                hsla(0., 0., 0.55, 1.)
+                TEXT_SECONDARY
             };
 
             section = section.child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
+                    .gap(px(2.))
                     .px_2()
                     .py_1()
                     .child(
@@ -234,20 +260,26 @@ fn render_events(detail: &PodDetail) -> AnyElement {
                             .gap_2()
                             .child(
                                 Label::new(ev.event_type.clone())
-                                    .text_size(rems(0.7))
-                                    .text_color(color),
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(type_color),
                             )
-                            .child(Label::new(ev.reason.clone()).text_size(rems(0.75)))
                             .child(
-                                Label::new(format!("x{}", ev.count))
-                                    .text_size(rems(0.7))
-                                    .text_color(hsla(0., 0., 0.5, 1.)),
+                                Label::new(ev.reason.clone())
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(TEXT_PRIMARY),
+                            )
+                            .child(
+                                Label::new(format!("×{}", ev.count))
+                                    .text_sm()
+                                    .text_color(TEXT_MUTED),
                             ),
                     )
                     .child(
                         Label::new(ev.message.clone())
-                            .text_size(rems(0.7))
-                            .text_color(hsla(0., 0., 0.5, 1.)),
+                            .text_sm()
+                            .text_color(TEXT_SECONDARY),
                     ),
             );
         }
