@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# make-icons.sh — Convert assets/icons/kairo.svg to an ICNS file
+# make-icons.sh — Convert assets/icons/kairo.png to an ICNS file
 #                 ready for the macOS .app bundle.
 #
-# Prerequisites (macOS):
-#   brew install librsvg          # provides rsvg-convert
-#   iconutil is built into macOS
+# Prerequisites: macOS only (uses sips + iconutil, both built-in)
 #
 # Usage:
 #   bash scripts/make-icons.sh
@@ -14,32 +12,24 @@
 
 set -euo pipefail
 
-SVG="assets/icons/kairo.svg"
+PNG="assets/icons/kairo.png"
 ICONSET="build/Kairo.iconset"
 OUT="crates/kairo-ui/assets/icons/kairo.icns"
 
 # ── Preflight ──────────────────────────────────────────────────────────────────
-if [[ ! -f "$SVG" ]]; then
-  echo "ERROR: $SVG not found."
-  echo "       Place your SVG icon at assets/icons/kairo.svg and re-run."
-  exit 1
-fi
-if ! command -v rsvg-convert &>/dev/null; then
-  echo "ERROR: rsvg-convert not found. Install with: brew install librsvg"
-  exit 1
-fi
-if ! command -v iconutil &>/dev/null; then
-  echo "ERROR: iconutil not found (macOS only)."
+if [[ ! -f "$PNG" ]]; then
+  echo "ERROR: $PNG not found. Place your PNG icon there and re-run."
   exit 1
 fi
 
-# ── Generate PNG slices ────────────────────────────────────────────────────────
+# ── Generate PNG slices via sips (built-in macOS tool) ────────────────────────
 mkdir -p "$ICONSET"
 
 declare -a SIZES=(16 32 128 256 512)
 for size in "${SIZES[@]}"; do
-  rsvg-convert -w "$size"        -h "$size"        "$SVG" -o "${ICONSET}/icon_${size}x${size}.png"
-  rsvg-convert -w $((size * 2)) -h $((size * 2)) "$SVG" -o "${ICONSET}/icon_${size}x${size}@2x.png"
+  sips -z "$size" "$size" "$PNG" --out "${ICONSET}/icon_${size}x${size}.png"    >/dev/null
+  double=$((size * 2))
+  sips -z "$double" "$double" "$PNG" --out "${ICONSET}/icon_${size}x${size}@2x.png" >/dev/null
   echo "  ${size}x${size} + @2x"
 done
 

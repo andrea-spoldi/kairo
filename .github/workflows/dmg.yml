@@ -38,7 +38,7 @@ jobs:
 
       - name: Install packaging tools
         run: |
-          brew install librsvg create-dmg
+          brew install create-dmg
           cargo install cargo-bundle --locked
 
       - name: Generate .icns from SVG
