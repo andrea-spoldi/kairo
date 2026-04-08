@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{Namespace, Pod};
+use k8s_openapi::api::core::v1::{Event as K8sEvent, Namespace, Pod};
 use kube::{Api, runtime::watcher};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 
-use crate::{CoreError, KubeClient, models::PodSummary};
+use crate::{CoreError, KubeClient, models::{ClusterEvent, PodSummary}};
 
 /// Watch pods in the given namespace (or all namespaces if `None`) and send
 /// a full sorted `Vec<PodSummary>` snapshot on every change.
@@ -93,6 +93,40 @@ impl PodWatcher {
                     }
                     Ok(_) => {} // Init, InitDone, Delete — handled by caller via full re-render
                     Err(e) => warn!("pod watcher error: {e}"),
+                }
+            }
+        })
+    }
+}
+
+/// Watches Kubernetes Events cluster-wide and forwards Warning-type events.
+pub struct ClusterEventWatcher;
+
+impl ClusterEventWatcher {
+    /// Spawn a cluster event watcher task.
+    ///
+    /// Sends every Warning event as it is applied or initially listed.
+    /// The task exits automatically when `tx` is dropped.
+    pub fn start(
+        kube_client: KubeClient,
+        tx: mpsc::Sender<ClusterEvent>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let api: Api<K8sEvent> = Api::all(kube_client.client);
+            let mut stream = watcher(api, watcher::Config::default()).boxed();
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(watcher::Event::Apply(ev) | watcher::Event::InitApply(ev)) => {
+                        // Client-side filter: only forward Warning events.
+                        if ev.type_.as_deref() == Some("Warning") {
+                            let cluster_ev = ClusterEvent::from(ev);
+                            if tx.send(cluster_ev).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!("cluster event watcher error: {e}"),
                 }
             }
         })
