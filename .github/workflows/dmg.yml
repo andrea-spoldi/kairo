@@ -37,9 +37,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-dmg-
 
       - name: Install packaging tools
-        run: |
-          brew install create-dmg
-          cargo install cargo-bundle --locked
+        run: brew install create-dmg
 
       - name: Generate .icns from SVG
         run: bash scripts/make-icons.sh
