@@ -2,11 +2,12 @@ use gpui::*;
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::label::Label;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::table::{Column, DataTable, TableDelegate, TableEvent, TableState};
 use kubescope_core::models::PodSummary;
 
-use crate::theme::status_color;
+use crate::theme::{status_color, status_symbol, BORDER, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
 
 /// Emitted when the user clicks a pod row.
 #[derive(Clone)]
@@ -19,7 +20,7 @@ pub struct PodSelected {
 const COLUMNS: &[(&str, &str, f32)] = &[
     ("name",      "Name",      200.),
     ("namespace", "Namespace", 120.),
-    ("status",    "Status",    150.),
+    ("status",    "Status",    160.),
     ("ready",     "Ready",      70.),
     ("restarts",  "Restarts",   80.),
     ("age",       "Age",        70.),
@@ -72,21 +73,53 @@ impl TableDelegate for PodTableDelegate {
         let pod = &self.pods[row_ix];
         let key = self.columns[col_ix].key.as_ref();
         match key {
-            "name"      => div().child(pod.name.clone()).into_any_element(),
-            "namespace" => div().child(pod.namespace.clone()).into_any_element(),
-            "status"    => {
+            "name" => div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(TEXT_PRIMARY)
+                .child(pod.name.clone())
+                .into_any_element(),
+            "namespace" => div()
+                .text_color(TEXT_SECONDARY)
+                .child(pod.namespace.clone())
+                .into_any_element(),
+            "status" => {
                 let color = status_color(&pod.status);
+                let symbol = status_symbol(&pod.status);
                 h_flex()
-                    .gap_1()
-                    .child(div().w_2().h_2().rounded_full().bg(color))
-                    .child(pod.status.clone())
+                    .gap(px(6.))
+                    .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
+                    .child(
+                        Label::new(format!("{symbol} {}", pod.status))
+                            .text_sm()
+                            .text_color(color)
+                            .font_weight(FontWeight::MEDIUM),
+                    )
                     .into_any_element()
             }
-            "ready"    => div().child(pod.ready.clone()).into_any_element(),
-            "restarts" => div().child(pod.restarts.to_string()).into_any_element(),
-            "age"      => div().child(pod.age.clone()).into_any_element(),
-            "node"     => div().child(pod.node.clone()).into_any_element(),
-            _          => div().into_any_element(),
+            "ready" => div()
+                .text_color(TEXT_SECONDARY)
+                .child(pod.ready.clone())
+                .into_any_element(),
+            "restarts" => div()
+                .text_color(TEXT_SECONDARY)
+                .child(pod.restarts.to_string())
+                .into_any_element(),
+            "age" => div()
+                .text_color(TEXT_MUTED)
+                .child(pod.age.clone())
+                .into_any_element(),
+            "node" => div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(TEXT_SECONDARY)
+                .child(pod.node.clone())
+                .into_any_element(),
+            _ => div().into_any_element(),
         }
     }
 }
@@ -185,7 +218,6 @@ impl PodListPanel {
         self.apply_filters(cx);
     }
 
-    /// Apply all active filters and push the result to the table delegate.
     fn apply_filters(&mut self, cx: &mut Context<Self>) {
         let name_query = self.name_input.read(cx).value().to_lowercase();
         let label_query = self.label_input.read(cx).value().to_string();
@@ -200,15 +232,12 @@ impl PodListPanel {
             .source_pods
             .iter()
             .filter(|p| {
-                // Name substring (case-insensitive).
                 if !name_query.is_empty() && !p.name.to_lowercase().contains(&name_query) {
                     return false;
                 }
-                // Status dropdown.
                 if status_value.as_ref() != "All" && p.status != status_value.as_ref() {
                     return false;
                 }
-                // Label selector: `key=value` or bare `key`.
                 if !label_query.is_empty() {
                     if let Some((k, v)) = label_query.split_once('=') {
                         if p.labels.get(k).map(String::as_str) != Some(v) {
@@ -261,17 +290,15 @@ impl Render for PodListPanel {
             // ── Filter toolbar ────────────────────────────────────────────────
             .child(
                 h_flex()
-                    .px_2()
-                    .py_1()
+                    .px_3()
+                    .py_2()
                     .gap_2()
                     .border_b_1()
-                    .border_color(gpui::rgb(0x3a3a3a))
+                    .border_color(BORDER)
                     .flex_shrink_0()
-                    .child(Input::new(&self.name_input).w(px(180.)))
-                    .child(Input::new(&self.label_input).w(px(140.)))
-                    .child(
-                        Select::new(&self.status_select).menu_width(gpui::rems(9.)),
-                    ),
+                    .child(Input::new(&self.name_input).w(px(200.)))
+                    .child(Input::new(&self.label_input).w(px(150.)))
+                    .child(Select::new(&self.status_select).menu_width(gpui::rems(10.))),
             )
             // ── Pod table ─────────────────────────────────────────────────────
             .child(div().flex_1().child(DataTable::new(&self.table).stripe(true)))

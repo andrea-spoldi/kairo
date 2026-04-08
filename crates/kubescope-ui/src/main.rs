@@ -21,6 +21,14 @@ fn main() {
         .with_assets(Assets)
         .run(|cx: &mut App| {
             gpui_component::init(cx);
+            // Switch the component library to dark mode so DataTable, Button,
+            // Input, Select, and all other widgets use colours calibrated for
+            // a dark background instead of the default light-mode palette.
+            gpui_component::theme::Theme::change(
+                gpui_component::theme::ThemeMode::Dark,
+                None,
+                cx,
+            );
             cx.activate(true);
 
             cx.spawn(async move |cx| {
