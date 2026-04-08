@@ -1,4 +1,5 @@
 pub mod cluster_health;
+pub mod event_feed;
 pub mod context_switcher;
 pub mod log_viewer;
 pub mod namespace_selector;
