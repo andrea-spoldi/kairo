@@ -8,7 +8,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::table::{Column, DataTable, TableDelegate, TableEvent, TableState};
-use kubescope_core::models::PodSummary;
+use kairo_core::models::PodSummary;
 
 use crate::actions::{ConfirmSelection, FocusSearch, NavigateDown, NavigateUp, ToggleGrouping};
 use crate::theme::{

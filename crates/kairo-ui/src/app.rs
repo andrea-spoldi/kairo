@@ -15,14 +15,14 @@ use gpui_component::{
     label::Label,
     select::{Select, SelectEvent, SelectState},
 };
-use kubescope_core::{
+use kairo_core::{
     ClusterEvent, KubeClient,
     models::PodSummary,
     watchers::{ClusterEventWatcher, NamespaceWatcher},
 };
 use tracing::{error, info};
 
-use kubescope_core::logs::LogStream;
+use kairo_core::logs::LogStream;
 
 use crate::{
     components::{
@@ -39,7 +39,7 @@ use crate::{
     },
 };
 
-const DOCK_ID: &str = "kubescope-dock";
+const DOCK_ID: &str = "kairo-dock";
 const DOCK_VERSION: usize = 1;
 const POLL_INTERVAL_MS: u64 = 100;
 
@@ -49,7 +49,7 @@ enum KubeEvent {
     Connected(KubeClient),
     Namespace(String),
     PodList(Vec<PodSummary>),
-    PodDetail(kubescope_core::models::PodDetail),
+    PodDetail(kairo_core::models::PodDetail),
     PodDetailError(String),
     LogLine(String),
     LogError(String),
@@ -487,7 +487,7 @@ impl Workspace {
                         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
                         tokio::spawn(async move {
                             if let Err(e) =
-                                kubescope_core::watchers::pod_watcher(pod_client.client, None, tx)
+                                kairo_core::watchers::pod_watcher(pod_client.client, None, tx)
                                     .await
                             {
                                 tracing::error!("pod watcher error: {e}");
@@ -639,7 +639,7 @@ impl Render for Workspace {
                             .items_center()
                             .gap_2()
                             .pl_2()
-                            .child(Label::new("KubeScope").text_sm()),
+                            .child(Label::new("Kairo").text_sm()),
                     )
                     .child(
                         div()

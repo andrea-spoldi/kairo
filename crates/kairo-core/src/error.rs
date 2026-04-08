@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// Top-level error type for `kubescope-core`.
+/// Top-level error type for `kairo-core`.
 #[derive(Debug, Error)]
 pub enum CoreError {
     /// Kubeconfig could not be loaded or parsed.

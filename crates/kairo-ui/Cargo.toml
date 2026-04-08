@@ -1,5 +1,5 @@
 [package]
-name = "kubescope-ui"
+name = "kairo-ui"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "kubescope"
+name = "kairo"
 path = "src/main.rs"
 
 # System packages required to compile GPUI on Linux.
@@ -29,7 +29,7 @@ gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
-kubescope-core = { path = "../kubescope-core" }
+kairo-core = { path = "../kairo-core" }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 tracing = "0.1"

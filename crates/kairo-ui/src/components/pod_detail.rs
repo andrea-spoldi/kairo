@@ -3,7 +3,7 @@ use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
-use kubescope_core::models::PodDetail;
+use kairo_core::models::PodDetail;
 
 use crate::theme::{
     status_color, status_symbol, BORDER, STATUS_FAILED, SURFACE,

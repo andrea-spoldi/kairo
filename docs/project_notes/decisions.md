@@ -4,15 +4,15 @@ Lightweight ADR log. Full context lives here; implementation details live in the
 
 ---
 
-### ADR-001: Two-crate workspace — kubescope-core (no UI) + kubescope-ui (2026-03-27)
+### ADR-001: Two-crate workspace — kairo-core (no UI) + kairo-ui (2026-03-27)
 
 **Context:**
 - Want to unit-test K8s logic without a display server
 - Want the option to add a CLI or alternative front-end later
 
 **Decision:**
-- Split into `kubescope-core` (K8s client, watchers, models — zero GPUI imports) and `kubescope-ui` (GPUI app)
-- Hard rule: `kubescope-core` must never import `gpui`
+- Split into `kairo-core` (K8s client, watchers, models — zero GPUI imports) and `kairo-ui` (GPUI app)
+- Hard rule: `kairo-core` must never import `gpui`
 
 **Alternatives Considered:**
 - Single crate → Rejected: would entangle K8s logic with UI, making tests harder
@@ -54,7 +54,7 @@ Lightweight ADR log. Full context lives here; implementation details live in the
 
 **Decision:**
 - All pod/namespace list updates use `kube::runtime::watcher` feeding a `tokio::sync::mpsc` channel
-- No `sleep`-based polling loops anywhere in `kubescope-core`
+- No `sleep`-based polling loops anywhere in `kairo-core`
 
 **Alternatives Considered:**
 - Polling every N seconds → Rejected: wastes API calls, laggy, hard to cancel cleanly

@@ -7,17 +7,17 @@ Project constants and configuration reference. **Never store secrets here** — 
 ### Workspace Structure
 
 - Workspace root: `kubescope/` (two crates)
-- Core crate: `crates/kubescope-core/` — K8s logic, zero UI deps
-- UI crate: `crates/kubescope-ui/` — GPUI application
+- Core crate: `crates/kairo-core/` — K8s logic, zero UI deps
+- UI crate: `crates/kairo-ui/` — GPUI application
 
 ### Approved Dependency Versions
 
-**Core (`kubescope-core`):**
+**Core (`kairo-core`):**
 - `kube` = `3.1.0` (features: `runtime, client, rustls-tls`)
 - `k8s-openapi` = `0.27.0` (features: `latest`)
 - `tokio` = `1` (features: `full`)
 
-**UI (`kubescope-ui`):**
+**UI (`kairo-ui`):**
 - `gpui` — git dep: `https://github.com/zed-industries/zed`
 - `gpui-component` — git dep: `https://github.com/longbridge/gpui-component`
 - Pin both to the same compatible rev when builds break
@@ -27,9 +27,9 @@ Project constants and configuration reference. **Never store secrets here** — 
 ```bash
 cargo check                                         # verify compilation
 cargo clippy -- -D warnings                         # lint (warnings = errors)
-cargo test -p kubescope-core                        # unit tests
-cargo test -p kubescope-core --features integration # needs live cluster
-cargo run -p kubescope-ui                           # launch the app
+cargo test -p kairo-core                        # unit tests
+cargo test -p kairo-core --features integration # needs live cluster
+cargo run -p kairo-ui                           # launch the app
 ```
 
 ### Important URLs

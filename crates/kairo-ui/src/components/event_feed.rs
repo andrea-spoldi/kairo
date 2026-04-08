@@ -5,7 +5,7 @@ use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
-use kubescope_core::models::ClusterEvent;
+use kairo_core::models::ClusterEvent;
 
 use crate::theme::{
     BORDER, STATUS_FAILED, SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
