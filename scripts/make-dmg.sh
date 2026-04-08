@@ -47,8 +47,30 @@ rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS"
 mkdir -p "${APP}/Contents/Resources"
 
-cp "${BINARY}" "${APP}/Contents/MacOS/kairo"
 cp "${ICNS}"   "${APP}/Contents/Resources/kairo.icns"
+
+# macOS .app bundles do not inherit the user's shell environment (KUBECONFIG,
+# PATH, etc.). We use a thin launcher script as CFBundleExecutable that
+# sources common shell init files before exec-ing the real binary.
+# The actual binary is renamed to kairo-bin.
+cp "${BINARY}" "${APP}/Contents/MacOS/kairo-bin"
+
+cat > "${APP}/Contents/MacOS/kairo" << 'LAUNCHER'
+#!/usr/bin/env bash
+# Inherit the user's shell environment so KUBECONFIG, PATH, etc. are available.
+for f in "$HOME/.zshrc" "$HOME/.zshenv" "$HOME/.bash_profile" "$HOME/.profile"; do
+  # Source quietly — ignore errors from interactive-only configs.
+  [ -f "$f" ] && source "$f" 2>/dev/null || true
+done
+
+# Fall back to the standard kubeconfig location if KUBECONFIG is not set.
+if [ -z "${KUBECONFIG:-}" ] && [ -f "$HOME/.kube/config" ]; then
+  export KUBECONFIG="$HOME/.kube/config"
+fi
+
+exec "$(dirname "$0")/kairo-bin" "$@"
+LAUNCHER
+chmod +x "${APP}/Contents/MacOS/kairo"
 
 cat > "${APP}/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
