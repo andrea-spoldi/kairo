@@ -254,6 +254,48 @@ impl From<Pod> for PodDetail {
     }
 }
 
+// ── ClusterEvent ─────────────────────────────────────────────────────────────
+
+/// A Kubernetes cluster-level event (used for warning aggregation in the sidebar).
+#[derive(Debug, Clone)]
+pub struct ClusterEvent {
+    /// Namespace where the event originated.
+    pub namespace: String,
+    /// Name of the involved object.
+    pub object_name: String,
+    /// Short, CamelCase reason (e.g. "BackOff", "Failed").
+    pub reason: String,
+    /// Human-readable event message.
+    pub message: String,
+    /// "Normal" or "Warning".
+    pub event_type: String,
+    /// How many times this event has occurred.
+    pub count: i32,
+    /// RFC 3339 timestamp of the most recent occurrence.
+    pub last_time: String,
+}
+
+impl From<K8sEvent> for ClusterEvent {
+    fn from(ev: K8sEvent) -> Self {
+        let last_time = ev
+            .last_timestamp
+            .as_ref()
+            .map(|t| t.0.to_string())
+            .unwrap_or_default();
+        let object_name = ev.involved_object.name.clone().unwrap_or_default();
+        let namespace = ev.metadata.namespace.clone().unwrap_or_default();
+        ClusterEvent {
+            namespace,
+            object_name,
+            reason: ev.reason.unwrap_or_default(),
+            message: ev.message.unwrap_or_default(),
+            event_type: ev.type_.unwrap_or_default(),
+            count: ev.count.unwrap_or(0),
+            last_time,
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

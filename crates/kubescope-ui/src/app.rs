@@ -11,21 +11,31 @@ use gpui::*;
 use gpui_component::{
     TitleBar,
     dock::{DockArea, DockItem, DockPlacement},
+    h_flex,
     label::Label,
     select::{Select, SelectEvent, SelectState},
 };
-use kubescope_core::{KubeClient, models::PodSummary, watchers::NamespaceWatcher};
+use kubescope_core::{
+    ClusterEvent, KubeClient,
+    models::PodSummary,
+    watchers::{ClusterEventWatcher, NamespaceWatcher},
+};
 use tracing::{error, info};
 
 use kubescope_core::logs::LogStream;
 
 use crate::{
     components::{
+        cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
         log_viewer::{ContainerSelected, LogViewerPanel},
         pod_detail::PodDetailPanel,
         pod_list::{PodListPanel, PodSelected},
     },
     kube_runtime,
+    theme::{
+        BORDER, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE,
+        TEXT_MUTED, TEXT_SECONDARY,
+    },
 };
 
 const DOCK_ID: &str = "kubescope-dock";
@@ -42,6 +52,7 @@ enum KubeEvent {
     PodDetailError(String),
     LogLine(String),
     LogError(String),
+    WarningEvent(ClusterEvent),
     Error(String),
 }
 
@@ -49,11 +60,12 @@ type EventQueue = Arc<Mutex<VecDeque<KubeEvent>>>;
 
 // ── Workspace ─────────────────────────────────────────────────────────────────
 
-/// Root view: title bar + dock area.
+/// Root view: title bar + dock area + status bar.
 pub struct Workspace {
     dock_area: Entity<DockArea>,
     context_select: Entity<SelectState<Vec<SharedString>>>,
     ns_select: Entity<SelectState<Vec<SharedString>>>,
+    health_panel: Entity<ClusterHealthPanel>,
     pod_list_panel: Entity<PodListPanel>,
     pod_detail_panel: Entity<PodDetailPanel>,
     log_panel: Entity<LogViewerPanel>,
@@ -119,15 +131,18 @@ impl Workspace {
         let dock_area = cx.new(|cx| DockArea::new(DOCK_ID, Some(DOCK_VERSION), window, cx));
         let weak_dock = dock_area.downgrade();
 
+        let health_panel = cx.new(|cx| ClusterHealthPanel::new(cx));
         let pod_list_panel = cx.new(|cx| PodListPanel::new(window, cx));
         let pod_detail_panel = cx.new(|cx| PodDetailPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
 
+        let left_panel = DockItem::tab(health_panel.clone(), &weak_dock, window, cx);
         let center = DockItem::tab(pod_list_panel.clone(), &weak_dock, window, cx);
         let right_panel = DockItem::tab(pod_detail_panel.clone(), &weak_dock, window, cx);
         let bottom_panel = DockItem::tab(log_panel.clone(), &weak_dock, window, cx);
 
         dock_area.update(cx, |dock, cx| {
+            dock.set_left_dock(left_panel, Some(px(220.)), true, window, cx);
             dock.set_center(center, window, cx);
             dock.set_right_dock(right_panel, Some(px(340.)), false, window, cx);
             dock.set_bottom_dock(bottom_panel, Some(px(220.)), false, window, cx);
@@ -157,7 +172,25 @@ impl Workspace {
                 if let SelectEvent::Confirm(Some(ns)) = event {
                     this.active_namespace = ns.clone();
                     this.apply_namespace_filter(cx);
+                    let ns_val = this.active_namespace.clone();
+                    this.health_panel.update(cx, |panel, cx| {
+                        panel.set_active_namespace(ns_val, cx);
+                    });
                 }
+            },
+        )
+        .detach();
+
+        // ── Subscribe to sidebar namespace click ──────────────────────────────
+        cx.subscribe_in(
+            &health_panel,
+            window,
+            |this, _, event: &SidebarNamespaceSelected, _window, cx| {
+                this.active_namespace = match &event.namespace {
+                    Some(ns) => SharedString::from(ns.clone()),
+                    None => SharedString::from("All"),
+                };
+                this.apply_namespace_filter(cx);
             },
         )
         .detach();
@@ -196,6 +229,7 @@ impl Workspace {
             dock_area,
             context_select,
             ns_select,
+            health_panel,
             pod_list_panel,
             pod_detail_panel,
             log_panel,
@@ -279,6 +313,10 @@ impl Workspace {
             KubeEvent::PodList(pods) => {
                 self.all_pods = pods;
                 self.apply_namespace_filter(cx);
+                let pods_ref = self.all_pods.clone();
+                self.health_panel.update(cx, |panel, cx| {
+                    panel.update_pods(&pods_ref, cx);
+                });
             }
             KubeEvent::PodDetail(detail) => {
                 // Collect container names before moving detail.
@@ -324,6 +362,11 @@ impl Workspace {
             }
             KubeEvent::LogError(msg) => {
                 error!("log stream error: {msg}");
+            }
+            KubeEvent::WarningEvent(ev) => {
+                self.health_panel.update(cx, |panel, cx| {
+                    panel.push_warning(ev, cx);
+                });
             }
             KubeEvent::Error(msg) => {
                 error!("kube error: {msg}");
@@ -398,6 +441,9 @@ impl Workspace {
         self.log_panel.update(cx, |panel, cx| {
             panel.clear(cx);
         });
+        self.health_panel.update(cx, |panel, cx| {
+            panel.clear(cx);
+        });
 
         let items = self.ns_items();
         self.ns_select.update(cx, |state, cx| {
@@ -414,7 +460,7 @@ impl Workspace {
                         .unwrap()
                         .push_back(KubeEvent::Connected(client.clone()));
 
-                    // Start pod watcher.
+                    // Start pod watcher sub-task.
                     let pod_events = events.clone();
                     let pod_abort = abort_flag.clone();
                     let pod_client = client.clone();
@@ -439,19 +485,41 @@ impl Workspace {
                         }
                     });
 
-                    // Start namespace watcher.
-                    let (ns_tx, mut ns_rx) = tokio::sync::mpsc::channel::<String>(64);
-                    let _watcher = NamespaceWatcher::start(client, ns_tx);
-
-                    while let Some(ns) = ns_rx.recv().await {
-                        if abort_flag.load(Ordering::SeqCst) {
-                            break;
+                    // Start namespace watcher sub-task.
+                    let ns_events = events.clone();
+                    let ns_abort = abort_flag.clone();
+                    let ns_client = client.clone();
+                    tokio::spawn(async move {
+                        let (ns_tx, mut ns_rx) = tokio::sync::mpsc::channel::<String>(64);
+                        let _watcher = NamespaceWatcher::start(ns_client, ns_tx);
+                        while let Some(ns) = ns_rx.recv().await {
+                            if ns_abort.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            ns_events
+                                .lock()
+                                .unwrap()
+                                .push_back(KubeEvent::Namespace(ns));
                         }
-                        events
-                            .lock()
-                            .unwrap()
-                            .push_back(KubeEvent::Namespace(ns));
-                    }
+                    });
+
+                    // Start cluster event watcher sub-task.
+                    let ev_events = events.clone();
+                    let ev_abort = abort_flag.clone();
+                    tokio::spawn(async move {
+                        let (ev_tx, mut ev_rx) =
+                            tokio::sync::mpsc::channel::<ClusterEvent>(64);
+                        let _watcher = ClusterEventWatcher::start(client, ev_tx);
+                        while let Some(ev) = ev_rx.recv().await {
+                            if ev_abort.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            ev_events
+                                .lock()
+                                .unwrap()
+                                .push_back(KubeEvent::WarningEvent(ev));
+                        }
+                    });
                 }
                 Err(e) => {
                     events
@@ -514,6 +582,31 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Compute pod stats for the status bar.
+        let running = self
+            .all_pods
+            .iter()
+            .filter(|p| p.status == "Running")
+            .count();
+        let pending = self
+            .all_pods
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.status.as_str(),
+                    "Pending" | "ContainerCreating" | "Initializing"
+                )
+            })
+            .count();
+        let failed = self.all_pods.len().saturating_sub(running + pending);
+        let total = self.all_pods.len();
+        let ctx_name = self
+            .active_context
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "no cluster".to_string());
+        let ns_name = self.active_namespace.to_string();
+
         div()
             .relative()
             .size_full()
@@ -548,9 +641,36 @@ impl Render for Workspace {
                             ),
                     ),
             )
-            .child(self.dock_area.clone())
+            .child(div().flex_1().min_h_0().child(self.dock_area.clone()))
+            .child(render_status_bar(&ctx_name, &ns_name, running, pending, failed, total))
             .children(gpui_component::Root::render_sheet_layer(_window, cx))
             .children(gpui_component::Root::render_dialog_layer(_window, cx))
             .children(gpui_component::Root::render_notification_layer(_window, cx))
     }
+}
+
+fn render_status_bar(
+    context: &str,
+    namespace: &str,
+    running: usize,
+    pending: usize,
+    failed: usize,
+    total: usize,
+) -> impl IntoElement {
+    h_flex()
+        .h(px(22.))
+        .px_3()
+        .gap_3()
+        .bg(SURFACE)
+        .border_t_1()
+        .border_color(BORDER)
+        .flex_shrink_0()
+        .child(Label::new(context.to_string()).text_sm().text_color(TEXT_MUTED))
+        .child(Label::new("│").text_sm().text_color(TEXT_MUTED))
+        .child(Label::new(namespace.to_string()).text_sm().text_color(TEXT_SECONDARY))
+        .child(div().flex_1())
+        .child(Label::new(format!("● {running}")).text_sm().text_color(STATUS_RUNNING))
+        .child(Label::new(format!("◐ {pending}")).text_sm().text_color(STATUS_PENDING))
+        .child(Label::new(format!("✖ {failed}")).text_sm().text_color(STATUS_FAILED))
+        .child(Label::new(format!("{total} pods")).text_sm().text_color(TEXT_MUTED))
 }
