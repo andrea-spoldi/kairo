@@ -24,6 +24,22 @@ libvulkan-dev = '*'
 libx11-dev = '*'
 libxcb1-dev = '*'
 
+# macOS app bundle config (used by `cargo bundle` + make-dmg.sh).
+# Run `bash scripts/make-icons.sh` first to generate assets/icons/kairo.icns.
+[package.metadata.bundle]
+name = "Kairo"
+identifier = "dev.kairo.app"
+icon = ["assets/icons/kairo.icns"]
+category = "Developer Tool"
+short_description = "Native Rust Kubernetes observability IDE"
+long_description = """
+Kairo is a native Rust desktop Kubernetes observability tool built on GPUI.
+Real-time pod monitoring, cluster health visualization, live event feeds,
+and log streaming — no Electron, no browser, no cloud dependency.
+"""
+copyright = "Copyright © 2026 Andrea Spoldi"
+minimum_system_version = "12.0"
+
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }

@@ -1,0 +1,65 @@
+name: macOS DMG
+
+# Builds a drag-to-install .dmg whenever a version tag is pushed.
+# Runs in parallel with cargo-dist's release workflow and uploads
+# the DMG to the same GitHub release once it exists.
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+jobs:
+  build-dmg:
+    name: Build Kairo.dmg (Apple Silicon)
+    runs-on: macos-14          # Apple Silicon runner
+    permissions:
+      contents: write          # needed for gh release upload
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      # Cache Cargo registry + git deps to speed up repeat builds.
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-dmg-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-dmg-
+
+      - name: Install packaging tools
+        run: |
+          brew install librsvg create-dmg
+          cargo install cargo-bundle --locked
+
+      - name: Generate .icns from SVG
+        run: bash scripts/make-icons.sh
+
+      - name: Build .app + DMG
+        run: bash scripts/make-dmg.sh "${GITHUB_REF_NAME#v}"
+
+      # cargo-dist creates the GitHub release in its own workflow.
+      # Wait up to ~5 minutes for it to appear, then upload the DMG.
+      - name: Upload DMG to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          DMG="Kairo-${TAG#v}-macos.dmg"
+          for attempt in 1 2 3 4 5 6; do
+            if gh release upload "${TAG}" "${DMG}" --clobber 2>/dev/null; then
+              echo "✓ Uploaded ${DMG} to release ${TAG}"
+              break
+            fi
+            echo "Release not ready yet (attempt ${attempt}/6) — waiting 60s…"
+            sleep 60
+          done
