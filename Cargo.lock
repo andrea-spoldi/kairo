@@ -3378,6 +3378,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "kairo-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kairo-ui"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+ "kairo-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3504,39 +3537,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
-]
-
-[[package]]
-name = "kubescope-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "futures",
- "k8s-openapi",
- "kube",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "kubescope-ui"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
- "kubescope-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

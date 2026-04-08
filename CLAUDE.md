@@ -1,4 +1,4 @@
-# KubeScope
+# Kairo
 
 A native Rust desktop Kubernetes IDE (think Lens, but without Electron).
 Built with GPUI + kube-rs. Targets macOS and Linux.
@@ -20,7 +20,7 @@ tracks upstream GPUI via dependabot), then match the GPUI rev it expects.
 
 Fallback plan: if the git dep situation becomes unmanageable, we can drop
 `gpui-component` and switch to `gpui-ce` from crates.io, building UI components
-from raw GPUI primitives. The `kubescope-core` crate is unaffected by this
+from raw GPUI primitives. The `kairo-core` crate is unaffected by this
 choice since it has zero UI dependencies.
 
 ## Architecture
@@ -28,17 +28,17 @@ choice since it has zero UI dependencies.
 Two-crate workspace. The K8s layer has **zero** UI dependencies.
 
 ```
-kubescope/
+kairo/
 ├── Cargo.toml                  # workspace root
 ├── crates/
-│   ├── kubescope-core/         # K8s client, watchers, models (NO gpui imports)
+│   ├── kairo-core/         # K8s client, watchers, models (NO gpui imports)
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── client.rs       # kubeconfig loading, context switching
 │   │       ├── watchers.rs     # kube::runtime::watcher-based streams
 │   │       ├── models.rs       # PodSummary, PodDetail, ContainerStatus, PodEvent
 │   │       └── logs.rs         # log follow stream abstraction
-│   └── kubescope-ui/           # GPUI application
+│   └── kairo-ui/           # GPUI application
 │       └── src/
 │           ├── main.rs
 │           ├── app.rs          # root state, dock layout shell
@@ -56,8 +56,8 @@ kubescope/
 
 ### Hard rules
 
-- `kubescope-core` must NEVER import `gpui`. If you feel the urge, you’re putting UI logic in the wrong crate.
-- All K8s API interaction goes through `kubescope-core`. The UI crate calls core functions, never constructs `Api<T>` directly.
+- `kairo-core` must NEVER import `gpui`. If you feel the urge, you’re putting UI logic in the wrong crate.
+- All K8s API interaction goes through `kairo-core`. The UI crate calls core functions, never constructs `Api<T>` directly.
 - Pod list updates use `kube::runtime::watcher` (event-driven). No polling loops.
 - No `.unwrap()` in non-test code. Propagate errors with `?` or handle explicitly.
 
@@ -65,7 +65,7 @@ kubescope/
 
 Approved dependency list. Do NOT add others without asking.
 
-**UI crate (`kubescope-ui`):**
+**UI crate (`kairo-ui`):**
 
 ```toml
 [dependencies]
@@ -81,7 +81,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "<PINNED_REV>" }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "<PINNED_REV>" }
 ```
 
-**Core crate (`kubescope-core`):**
+**Core crate (`kairo-core`):**
 
 |Crate                                |Version |Notes                                  |
 |-------------------------------------|--------|---------------------------------------|
@@ -106,15 +106,15 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "
 ```bash
 cargo check                           # verify compilation
 cargo clippy -- -D warnings           # lint, treat warnings as errors
-cargo test -p kubescope-core          # unit tests
-cargo test -p kubescope-core --features integration  # needs a live cluster
-cargo run -p kubescope-ui             # launch the app
+cargo test -p kairo-core          # unit tests
+cargo test -p kairo-core --features integration  # needs a live cluster
+cargo run -p kairo-ui             # launch the app
 ```
 
 ## Code Style
 
 - Rust 2021 edition
-- Doc comments (`///`) on all public types and functions in `kubescope-core`
+- Doc comments (`///`) on all public types and functions in `kairo-core`
 - `#[derive(Debug, Clone)]` on all data model structs
 - Error types use `thiserror` with human-readable messages
 - Prefer `impl Into<SharedString>` for GPUI string params
@@ -143,22 +143,22 @@ Use `gpui_component::init(cx)` in the app entry point and wrap the root view in
 a `gpui_component::Root`. Refer to the gpui-component getting started guide:
 https://longbridge.github.io/gpui-component/docs/getting-started
 
-**Done when:** `cargo check` succeeds and `cargo run -p kubescope-ui` opens a window.
+**Done when:** `cargo check` succeeds and `cargo run -p kairo-ui` opens a window.
 
 ### Phase 2 — Core: Client & Models
 
-Implement in `kubescope-core`:
+Implement in `kairo-core`:
 
 - `client.rs`: load kubeconfig, list contexts, create a client for a given context
 - `models.rs`: `PodSummary` (name, namespace, status, ready count, restarts, age, node),
   `PodDetail`, `ContainerStatus`, `PodEvent` — with `From<Pod>` conversions
 - Unit tests for model conversions (use fixture JSON)
 
-**Done when:** `cargo test -p kubescope-core` passes with model conversion tests.
+**Done when:** `cargo test -p kairo-core` passes with model conversion tests.
 
 ### Phase 3 — Core: Watchers & Logs
 
-Implement in `kubescope-core`:
+Implement in `kairo-core`:
 
 - `watchers.rs`: pod watcher using `kube::runtime::watcher` that sends `PodSummary`
   updates through a `tokio::sync::mpsc` channel. Namespace watcher for the namespace list.
@@ -177,7 +177,7 @@ Build the GPUI app shell using gpui-component’s Dock layout:
 
 Reference the gpui-component DockArea docs and story examples.
 
-**Done when:** `cargo run -p kubescope-ui` shows the dock layout with placeholder content.
+**Done when:** `cargo run -p kairo-ui` shows the dock layout with placeholder content.
 
 ### Phase 5 — UI: Context & Namespace Selectors
 

@@ -2,9 +2,9 @@
 //! pod events from all namespaces to stdout.
 //!
 //! Requires a live cluster:
-//!   cargo run -p kubescope-core --example watch_pods
+//!   cargo run -p kairo-core --example watch_pods
 
-use kubescope_core::{
+use kairo_core::{
     client::KubeClient,
     watchers::{NamespaceWatcher, PodWatcher},
 };

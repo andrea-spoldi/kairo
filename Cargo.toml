@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/kubescope-core",
-    "crates/kubescope-ui",
+    "crates/kairo-core",
+    "crates/kairo-ui",
 ]
 resolver = "2"
 

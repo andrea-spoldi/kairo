@@ -16,7 +16,7 @@ pub fn init() {
     }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_name("kubescope-kube")
+        .thread_name("kairo-kube")
         .build()
         .expect("failed to build kube tokio runtime");
 
