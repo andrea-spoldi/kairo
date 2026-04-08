@@ -18,6 +18,7 @@ path = "src/main.rs"
 cmake = '*'
 pkg-config = '*'
 libxkbcommon-dev = '*'
+libxkbcommon-x11-dev = '*'
 libwayland-dev = '*'
 libvulkan-dev = '*'
 libx11-dev = '*'
