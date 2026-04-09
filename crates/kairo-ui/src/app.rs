@@ -232,6 +232,10 @@ impl Workspace {
             |this, _, action: &PaletteAction, window, cx| match action.clone() {
                 PaletteAction::SelectPod { name, namespace } => {
                     this.on_pod_selected(&name, &namespace, cx);
+                    let (n, ns) = (name.clone(), namespace.clone());
+                    this.pod_list_panel.update(cx, |panel, cx| {
+                        panel.scroll_to_pod(&n, &ns, cx);
+                    });
                 }
                 PaletteAction::SwitchContext(ctx) => {
                     this.switch_context(ctx, window, cx);

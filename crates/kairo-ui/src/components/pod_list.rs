@@ -490,6 +490,27 @@ impl PodListPanel {
         }
         cx.notify();
     }
+
+    /// Highlight the pod matching `name`/`namespace` in the table without
+    /// changing any active filters. Called when the user jumps from the palette.
+    pub fn scroll_to_pod(&mut self, name: &str, namespace: &str, cx: &mut Context<Self>) {
+        let pod_ix = self
+            .table
+            .read(cx)
+            .delegate()
+            .pods
+            .iter()
+            .position(|p| p.name == name && p.namespace == namespace);
+
+        if let Some(pod_ix) = pod_ix {
+            self.cursor = Some(pod_ix);
+            let row_ix = self.table.read(cx).delegate().row_for_pod(pod_ix);
+            self.table.update(cx, |t, _| {
+                t.delegate_mut().cursor_row = row_ix;
+            });
+            cx.notify();
+        }
+    }
 }
 
 impl EventEmitter<PanelEvent> for PodListPanel {}
