@@ -228,6 +228,7 @@ impl Render for CommandPalette {
                     .shadow_lg()
                     .flex()
                     .flex_col()
+                    .overflow_hidden()
                     // Stop backdrop click-through.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     // Key bindings scoped to this overlay.
@@ -274,7 +275,7 @@ fn render_results(
     items: &[PaletteItem],
     selected: usize,
 ) -> impl IntoElement {
-    let mut list = div().flex_1().py(px(4.));
+    let mut list = div().flex_1().min_h_0().py(px(4.));
 
     if filtered.is_empty() {
         list = list.child(

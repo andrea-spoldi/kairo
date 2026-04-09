@@ -493,6 +493,7 @@ impl PodListPanel {
 
     /// Highlight the pod matching `name`/`namespace` in the table without
     /// changing any active filters. Called when the user jumps from the palette.
+    /// Uses `set_selected_row` so the highlight and scroll match a normal row click.
     pub fn scroll_to_pod(&mut self, name: &str, namespace: &str, cx: &mut Context<Self>) {
         let pod_ix = self
             .table
@@ -505,10 +506,14 @@ impl PodListPanel {
         if let Some(pod_ix) = pod_ix {
             self.cursor = Some(pod_ix);
             let row_ix = self.table.read(cx).delegate().row_for_pod(pod_ix);
-            self.table.update(cx, |t, _| {
-                t.delegate_mut().cursor_row = row_ix;
-            });
-            cx.notify();
+            if let Some(row_ix) = row_ix {
+                // set_selected_row scrolls the viewport, applies the native row
+                // highlight, and emits TableEvent::SelectRow so our subscriber
+                // updates cursor_row automatically.
+                self.table.update(cx, |t, cx| {
+                    t.set_selected_row(row_ix, cx);
+                });
+            }
         }
     }
 }
