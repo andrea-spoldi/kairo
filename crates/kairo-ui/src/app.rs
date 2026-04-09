@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use gpui::*;
+use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     TitleBar,
     dock::{DockArea, DockItem, DockPlacement, PanelView},
@@ -25,8 +25,10 @@ use tracing::{error, info};
 use kairo_core::logs::LogStream;
 
 use crate::{
+    actions::OpenCommandPalette,
     components::{
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
+        command_palette::{CommandPalette, PaletteAction},
         event_feed::EventFeedPanel,
         log_viewer::{ContainerSelected, LogViewerPanel},
         pod_detail::PodDetailPanel,
@@ -71,8 +73,11 @@ pub struct Workspace {
     pod_list_panel: Entity<PodListPanel>,
     pod_detail_panel: Entity<PodDetailPanel>,
     log_panel: Entity<LogViewerPanel>,
+    palette: Entity<CommandPalette>,
     /// Full unfiltered pod list from the watcher.
     all_pods: Vec<PodSummary>,
+    /// Context names loaded from kubeconfig.
+    contexts: Vec<SharedString>,
     /// Sorted list of namespace names seen from the current cluster.
     namespaces: Vec<SharedString>,
     active_namespace: SharedString,
@@ -117,7 +122,7 @@ impl Workspace {
         });
 
         let context_select = cx.new(|cx| {
-            SelectState::new(contexts, initial_ctx_ix, window, cx)
+            SelectState::new(contexts.clone(), initial_ctx_ix, window, cx)
         });
 
         let ns_select = cx.new(|cx| {
@@ -217,6 +222,32 @@ impl Workspace {
         )
         .detach();
 
+        // ── Build command palette ─────────────────────────────────────────────
+        let palette = cx.new(|cx| CommandPalette::new(window, cx));
+
+        // Forward palette actions back to Workspace.
+        cx.subscribe_in(
+            &palette,
+            window,
+            |this, _, action: &PaletteAction, window, cx| match action.clone() {
+                PaletteAction::SelectPod { name, namespace } => {
+                    this.on_pod_selected(&name, &namespace, cx);
+                }
+                PaletteAction::SwitchContext(ctx) => {
+                    this.switch_context(ctx, window, cx);
+                }
+                PaletteAction::SwitchNamespace(ns) => {
+                    this.active_namespace = SharedString::from(ns.clone());
+                    this.apply_namespace_filter(cx);
+                    let ns_val = this.active_namespace.clone();
+                    this.health_panel.update(cx, |panel, cx| {
+                        panel.set_active_namespace(ns_val, cx);
+                    });
+                }
+            },
+        )
+        .detach();
+
         // ── Subscribe to container tab selection in log panel ─────────────────
         cx.subscribe_in(
             &log_panel,
@@ -246,7 +277,9 @@ impl Workspace {
             pod_list_panel,
             pod_detail_panel,
             log_panel,
+            palette,
             all_pods: Vec::new(),
+            contexts: contexts.clone(),
             namespaces: Vec::new(),
             active_namespace: SharedString::from("All"),
             active_context: current_ctx.clone(),
@@ -320,6 +353,8 @@ impl Workspace {
                     self.ns_select.update(cx, |state, cx| {
                         state.set_items(items, window, cx);
                     });
+                    let ns_list = self.namespaces.clone();
+                    self.palette.update(cx, |p, cx| p.set_namespaces(&ns_list, cx));
                     cx.notify();
                 }
             }
@@ -330,6 +365,8 @@ impl Workspace {
                 self.health_panel.update(cx, |panel, cx| {
                     panel.update_pods(&pods_ref, cx);
                 });
+                // Keep palette index up to date.
+                self.palette.update(cx, |p, cx| p.set_pods(&pods_ref, cx));
             }
             KubeEvent::PodDetail(detail) => {
                 // Collect container names before moving detail.
@@ -575,6 +612,19 @@ impl Workspace {
         });
     }
 
+    /// Open the command palette with current pods / contexts / namespaces.
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pods = self.all_pods.clone();
+        let contexts = self.contexts.clone();
+        let namespaces = self.namespaces.clone();
+        self.palette.update(cx, |p, cx| {
+            p.set_pods(&pods, cx);
+            p.set_contexts(&contexts, cx);
+            p.set_namespaces(&namespaces, cx);
+            p.show(window, cx);
+        });
+    }
+
     /// Push the namespace-filtered pod list to the panel (which re-applies search filters).
     fn apply_namespace_filter(&mut self, cx: &mut Context<Self>) {
         let filtered: Vec<PodSummary> = if self.active_namespace.as_ref() == "All" {
@@ -631,6 +681,9 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_col()
+            .on_action(cx.listener(|this, _: &OpenCommandPalette, window, cx| {
+                this.open_palette(window, cx);
+            }))
             .child(
                 TitleBar::new()
                     .child(
@@ -665,6 +718,10 @@ impl Render for Workspace {
             .children(gpui_component::Root::render_sheet_layer(_window, cx))
             .children(gpui_component::Root::render_dialog_layer(_window, cx))
             .children(gpui_component::Root::render_notification_layer(_window, cx))
+            // Command palette overlay — rendered last so it sits on top.
+            .when(self.palette.read(cx).is_visible(), |d: Div| {
+                d.child(self.palette.clone())
+            })
     }
 }
 

@@ -1,6 +1,7 @@
 pub mod cluster_health;
-pub mod event_feed;
+pub mod command_palette;
 pub mod context_switcher;
+pub mod event_feed;
 pub mod log_viewer;
 pub mod namespace_selector;
 pub mod pod_detail;

@@ -9,7 +9,10 @@ use gpui::*;
 use gpui_component::{Root, TitleBar};
 use gpui_component_assets::Assets;
 
-use actions::{ConfirmSelection, FocusSearch, NavigateDown, NavigateUp, ToggleGrouping};
+use actions::{
+    CloseCommandPalette, ConfirmSelection, FocusSearch, NavigateDown, NavigateUp,
+    OpenCommandPalette, ToggleGrouping,
+};
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -33,7 +36,13 @@ fn main() {
             );
             cx.activate(true);
 
-            // Pod list keyboard navigation (only fires when PodList has key context focus).
+            // Global shortcuts (no context — fire anywhere).
+            cx.bind_keys([
+                KeyBinding::new("cmd-k",  OpenCommandPalette, None),
+                KeyBinding::new("ctrl-k", OpenCommandPalette, None),
+            ]);
+
+            // Pod list navigation (fires only when PodList key context is focused).
             cx.bind_keys([
                 KeyBinding::new("j",      NavigateDown,      Some("PodList")),
                 KeyBinding::new("k",      NavigateUp,        Some("PodList")),
@@ -42,6 +51,14 @@ fn main() {
                 KeyBinding::new("return", ConfirmSelection,  Some("PodList")),
                 KeyBinding::new("/",      FocusSearch,       Some("PodList")),
                 KeyBinding::new("g",      ToggleGrouping,    Some("PodList")),
+            ]);
+
+            // Palette navigation (fires only when Palette key context is focused).
+            cx.bind_keys([
+                KeyBinding::new("down",   NavigateDown,       Some("Palette")),
+                KeyBinding::new("up",     NavigateUp,         Some("Palette")),
+                KeyBinding::new("return", ConfirmSelection,   Some("Palette")),
+                KeyBinding::new("escape", CloseCommandPalette, Some("Palette")),
             ]);
 
             cx.spawn(async move |cx| {
