@@ -513,6 +513,10 @@ impl Panel for PodListPanel {
     fn closable(&self, _: &App) -> bool {
         false
     }
+
+    fn zoomable(&self, _: &App) -> Option<gpui_component::dock::PanelControl> {
+        None
+    }
 }
 
 impl Render for PodListPanel {

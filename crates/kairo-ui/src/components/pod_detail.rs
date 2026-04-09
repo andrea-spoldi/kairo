@@ -49,6 +49,10 @@ impl Panel for PodDetailPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         "Pod Detail"
     }
+
+    fn zoomable(&self, _: &App) -> Option<gpui_component::dock::PanelControl> {
+        None
+    }
 }
 
 impl Render for PodDetailPanel {

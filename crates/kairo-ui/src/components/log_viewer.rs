@@ -121,6 +121,10 @@ impl Panel for LogViewerPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         "Logs"
     }
+
+    fn zoomable(&self, _: &App) -> Option<gpui_component::dock::PanelControl> {
+        None
+    }
 }
 
 impl Render for LogViewerPanel {

@@ -60,6 +60,10 @@ impl Panel for EventFeedPanel {
         "Events"
     }
 
+    fn zoomable(&self, _: &App) -> Option<gpui_component::dock::PanelControl> {
+        None
+    }
+
     fn closable(&self, _: &App) -> bool {
         false
     }

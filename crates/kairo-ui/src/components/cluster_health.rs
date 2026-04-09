@@ -121,6 +121,10 @@ impl Panel for ClusterHealthPanel {
         "Cluster"
     }
 
+    fn zoomable(&self, _: &App) -> Option<gpui_component::dock::PanelControl> {
+        None
+    }
+
     fn closable(&self, _: &App) -> bool {
         false
     }
