@@ -6,4 +6,4 @@ pub mod watchers;
 
 pub use client::KubeClient;
 pub use error::CoreError;
-pub use models::ClusterEvent;
+pub use models::{ClusterEvent, ConfigMapSummary, DeploymentSummary, NodeSummary, ServiceSummary};
