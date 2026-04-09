@@ -1,3 +1,15 @@
 use gpui::actions;
 
-actions!(kairo, [Quit, FocusSearch, NavigateUp, NavigateDown, ConfirmSelection, ToggleGrouping]);
+actions!(
+    kairo,
+    [
+        Quit,
+        FocusSearch,
+        NavigateUp,
+        NavigateDown,
+        ConfirmSelection,
+        ToggleGrouping,
+        OpenCommandPalette,
+        CloseCommandPalette,
+    ]
+);
