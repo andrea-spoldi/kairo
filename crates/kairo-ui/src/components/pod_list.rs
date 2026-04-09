@@ -222,7 +222,6 @@ impl TableDelegate for PodTableDelegate {
                             .bg(bg)
                             .px(px(4.))
                             .gap(px(6.))
-                            .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
                             .child(
                                 Label::new(format!("{symbol} {}", pod.status))
                                     .text_sm()
