@@ -57,9 +57,15 @@ impl CommandPalette {
         });
 
         cx.subscribe(&input, |this, state, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                let text = state.read(cx).value().to_string();
-                this.refilter(&text, cx);
+            match event {
+                InputEvent::Change => {
+                    let text = state.read(cx).value().to_string();
+                    this.refilter(&text, cx);
+                }
+                InputEvent::PressEnter { .. } => {
+                    this.confirm(cx);
+                }
+                _ => {}
             }
         })
         .detach();
