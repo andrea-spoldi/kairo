@@ -249,7 +249,14 @@ impl Render for CommandPalette {
                     // Divider
                     .child(div().h_px().bg(BORDER))
                     // ── Results ────────────────────────────────────────────────
-                    .child(render_results(&filtered, &items, selected))
+                    // flex_1 + min_h_0 gives the Scrollable wrapper a definite
+                    // height so its inner overflow_y_scroll actually activates.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .child(render_results(&filtered, &items, selected)),
+                    )
                     // ── Footer hint ────────────────────────────────────────────
                     .child(
                         div()
@@ -275,7 +282,7 @@ fn render_results(
     items: &[PaletteItem],
     selected: usize,
 ) -> impl IntoElement {
-    let mut list = div().flex_1().min_h_0().py(px(4.));
+    let mut list = div().py(px(4.));
 
     if filtered.is_empty() {
         list = list.child(
