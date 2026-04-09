@@ -205,6 +205,7 @@ impl Render for CommandPalette {
         let items = self.all_items.clone();
 
         // Full-screen backdrop that dismisses on click.
+        // on_scroll_wheel stops wheel events from reaching panels behind the overlay.
         div()
             .absolute()
             .inset_0()
@@ -213,6 +214,7 @@ impl Render for CommandPalette {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.hide(cx)),
             )
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             // Center the modal box horizontally.
             .flex()
             .justify_center()
