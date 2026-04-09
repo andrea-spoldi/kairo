@@ -43,14 +43,16 @@ fn main() {
             ]);
 
             // Pod list navigation (fires only when PodList key context is focused).
+            // "&& !Input" prevents these from firing when a text field inside
+            // the PodList panel has focus (Input declares key_context("Input")).
             cx.bind_keys([
-                KeyBinding::new("j",      NavigateDown,      Some("PodList")),
-                KeyBinding::new("k",      NavigateUp,        Some("PodList")),
-                KeyBinding::new("down",   NavigateDown,      Some("PodList")),
-                KeyBinding::new("up",     NavigateUp,        Some("PodList")),
-                KeyBinding::new("return", ConfirmSelection,  Some("PodList")),
-                KeyBinding::new("/",      FocusSearch,       Some("PodList")),
-                KeyBinding::new("g",      ToggleGrouping,    Some("PodList")),
+                KeyBinding::new("j",      NavigateDown,      Some("PodList && !Input")),
+                KeyBinding::new("k",      NavigateUp,        Some("PodList && !Input")),
+                KeyBinding::new("down",   NavigateDown,      Some("PodList && !Input")),
+                KeyBinding::new("up",     NavigateUp,        Some("PodList && !Input")),
+                KeyBinding::new("return", ConfirmSelection,  Some("PodList && !Input")),
+                KeyBinding::new("/",      FocusSearch,       Some("PodList && !Input")),
+                KeyBinding::new("g",      ToggleGrouping,    Some("PodList && !Input")),
             ]);
 
             // Palette navigation (fires only when Palette key context is focused).
