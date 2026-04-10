@@ -47,7 +47,7 @@ use crate::{
 };
 
 const DOCK_ID: &str = "kairo-dock";
-const DOCK_VERSION: usize = 1;
+const DOCK_VERSION: usize = 2;
 const POLL_INTERVAL_MS: u64 = 100;
 
 // ── Event queue shared between the tokio kube tasks and the GPUI poll loop ──
@@ -181,23 +181,24 @@ impl Workspace {
             window,
             cx,
         );
-        // Right dock: YAML viewer (first) + Pod Detail (second)
-        let right = DockItem::tabs(
+        // Right dock: YAML viewer only — single panel, no tab-switching needed.
+        let right = DockItem::tab(yaml_panel.clone(), &weak_dock, window, cx);
+        // Bottom dock: Pod Detail (first) + Log viewer (second)
+        let bottom = DockItem::tabs(
             vec![
-                Arc::new(yaml_panel.clone())       as Arc<dyn PanelView>,
                 Arc::new(pod_detail_panel.clone()) as Arc<dyn PanelView>,
+                Arc::new(log_panel.clone())        as Arc<dyn PanelView>,
             ],
             &weak_dock,
             window,
             cx,
         );
-        let bottom_panel = DockItem::tab(log_panel.clone(), &weak_dock, window, cx);
 
         dock_area.update(cx, |dock, cx| {
             dock.set_left_dock(left_panel, Some(px(220.)), true, window, cx);
             dock.set_center(center, window, cx);
             dock.set_right_dock(right, Some(px(380.)), false, window, cx);
-            dock.set_bottom_dock(bottom_panel, Some(px(220.)), false, window, cx);
+            dock.set_bottom_dock(bottom, Some(px(280.)), false, window, cx);
         });
 
         let events: EventQueue = Arc::new(Mutex::new(VecDeque::new()));
@@ -481,9 +482,10 @@ impl Workspace {
                     panel.set_detail(detail);
                     cx.notify();
                 });
-                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
+                // Pod detail + log viewer both live in the bottom dock.
+                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
                     self.dock_area.update(cx, |dock, cx| {
-                        dock.toggle_dock(DockPlacement::Right, window, cx);
+                        dock.toggle_dock(DockPlacement::Bottom, window, cx);
                     });
                 }
 
@@ -496,11 +498,6 @@ impl Workspace {
                     });
                     if let Some(client) = self.kube_client.clone() {
                         self.start_log_stream(client, &namespace, &pod_name, &first_container);
-                    }
-                    if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                        self.dock_area.update(cx, |dock, cx| {
-                            dock.toggle_dock(DockPlacement::Bottom, window, cx);
-                        });
                     }
                 }
             }
