@@ -22,4 +22,8 @@ pub enum CoreError {
     /// An I/O error (e.g. reading log stream lines).
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A generic string error (e.g. serialization failures).
+    #[error("{0}")]
+    Other(String),
 }

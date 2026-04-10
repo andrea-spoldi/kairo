@@ -1,4 +1,5 @@
-use k8s_openapi::api::core::v1::{Event, Pod};
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::{ConfigMap, Event, Node, Pod, Service};
 use kube::api::ListParams;
 use kube::config::{Config, KubeConfigOptions, Kubeconfig};
 use kube::Api;
@@ -84,6 +85,41 @@ impl KubeClient {
         let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
         let pod = api.get(name).await?;
         Ok(PodDetail::from(pod))
+    }
+
+    /// Fetch the raw YAML representation of a Pod.
+    pub async fn fetch_pod_yaml(&self, namespace: &str, name: &str) -> Result<String, CoreError> {
+        let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
+        let obj = api.get(name).await?;
+        serde_yaml::to_string(&obj).map_err(|e| CoreError::Other(e.to_string()))
+    }
+
+    /// Fetch the raw YAML representation of a Deployment.
+    pub async fn fetch_deployment_yaml(&self, namespace: &str, name: &str) -> Result<String, CoreError> {
+        let api: Api<Deployment> = Api::namespaced(self.client.clone(), namespace);
+        let obj = api.get(name).await?;
+        serde_yaml::to_string(&obj).map_err(|e| CoreError::Other(e.to_string()))
+    }
+
+    /// Fetch the raw YAML representation of a Service.
+    pub async fn fetch_service_yaml(&self, namespace: &str, name: &str) -> Result<String, CoreError> {
+        let api: Api<Service> = Api::namespaced(self.client.clone(), namespace);
+        let obj = api.get(name).await?;
+        serde_yaml::to_string(&obj).map_err(|e| CoreError::Other(e.to_string()))
+    }
+
+    /// Fetch the raw YAML representation of a ConfigMap.
+    pub async fn fetch_configmap_yaml(&self, namespace: &str, name: &str) -> Result<String, CoreError> {
+        let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), namespace);
+        let obj = api.get(name).await?;
+        serde_yaml::to_string(&obj).map_err(|e| CoreError::Other(e.to_string()))
+    }
+
+    /// Fetch the raw YAML representation of a Node (cluster-scoped).
+    pub async fn fetch_node_yaml(&self, name: &str) -> Result<String, CoreError> {
+        let api: Api<Node> = Api::all(self.client.clone());
+        let obj = api.get(name).await?;
+        serde_yaml::to_string(&obj).map_err(|e| CoreError::Other(e.to_string()))
     }
 
     /// Fetch Kubernetes events related to a specific pod.

@@ -440,6 +440,16 @@ pub struct NodeSummary {
     /// Kubelet version string.
     pub version: String,
     pub os_image: String,
+    /// Total CPU capacity in millicores (0 if unavailable).
+    pub cpu_capacity_milli: i64,
+    /// Allocatable CPU in millicores (schedulable by pods).
+    pub cpu_allocatable_milli: i64,
+    /// Total memory capacity in bytes (0 if unavailable).
+    pub memory_capacity_bytes: i64,
+    /// Allocatable memory in bytes.
+    pub memory_allocatable_bytes: i64,
+    /// Maximum pod count capacity (0 if unavailable).
+    pub pod_capacity: i64,
 }
 
 impl From<K8sNode> for NodeSummary {
@@ -468,9 +478,96 @@ impl From<K8sNode> for NodeSummary {
             .and_then(|s| s.node_info.as_ref())
             .map(|i| i.os_image.clone())
             .unwrap_or_default();
-        NodeSummary { name, status, roles, version, os_image,
-            age: age_from_ts(node.metadata.creation_timestamp.as_ref()) }
+
+        let capacity = node.status.as_ref().and_then(|s| s.capacity.as_ref());
+        let allocatable = node.status.as_ref().and_then(|s| s.allocatable.as_ref());
+
+        let cpu_capacity_milli = capacity
+            .and_then(|c| c.get("cpu"))
+            .map(|q| parse_cpu_millis(&q.0))
+            .unwrap_or(0);
+        let cpu_allocatable_milli = allocatable
+            .and_then(|c| c.get("cpu"))
+            .map(|q| parse_cpu_millis(&q.0))
+            .unwrap_or(0);
+        let memory_capacity_bytes = capacity
+            .and_then(|c| c.get("memory"))
+            .map(|q| parse_memory_bytes(&q.0))
+            .unwrap_or(0);
+        let memory_allocatable_bytes = allocatable
+            .and_then(|c| c.get("memory"))
+            .map(|q| parse_memory_bytes(&q.0))
+            .unwrap_or(0);
+        let pod_capacity = capacity
+            .and_then(|c| c.get("pods"))
+            .and_then(|q| q.0.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        NodeSummary {
+            name, status, roles, version, os_image,
+            age: age_from_ts(node.metadata.creation_timestamp.as_ref()),
+            cpu_capacity_milli,
+            cpu_allocatable_milli,
+            memory_capacity_bytes,
+            memory_allocatable_bytes,
+            pod_capacity,
+        }
     }
+}
+
+// ── Kubernetes quantity parsers ───────────────────────────────────────────────
+
+/// Parse a Kubernetes CPU quantity string into millicores.
+///
+/// Examples: `"4"` → 4000, `"500m"` → 500, `"2500m"` → 2500.
+pub fn parse_cpu_millis(s: &str) -> i64 {
+    if let Some(cores) = s.strip_suffix('m') {
+        cores.parse::<i64>().unwrap_or(0)
+    } else {
+        (s.parse::<f64>().unwrap_or(0.0) * 1000.0) as i64
+    }
+}
+
+/// Parse a Kubernetes memory quantity string into bytes.
+///
+/// Examples: `"8Gi"` → 8×2³⁰, `"512Mi"` → 512×2²⁰, `"1G"` → 10⁹.
+pub fn parse_memory_bytes(s: &str) -> i64 {
+    if let Some(n) = s.strip_suffix("Ki") {
+        n.parse::<i64>().unwrap_or(0) * 1024
+    } else if let Some(n) = s.strip_suffix("Mi") {
+        n.parse::<i64>().unwrap_or(0) * 1024 * 1024
+    } else if let Some(n) = s.strip_suffix("Gi") {
+        n.parse::<i64>().unwrap_or(0) * 1024 * 1024 * 1024
+    } else if let Some(n) = s.strip_suffix("Ti") {
+        n.parse::<i64>().unwrap_or(0) * 1024 * 1024 * 1024 * 1024
+    } else if let Some(n) = s.strip_suffix('k') {
+        n.parse::<i64>().unwrap_or(0) * 1000
+    } else if let Some(n) = s.strip_suffix('M') {
+        n.parse::<i64>().unwrap_or(0) * 1_000_000
+    } else if let Some(n) = s.strip_suffix('G') {
+        n.parse::<i64>().unwrap_or(0) * 1_000_000_000
+    } else if let Some(n) = s.strip_suffix('T') {
+        n.parse::<i64>().unwrap_or(0) * 1_000_000_000_000
+    } else {
+        s.parse::<i64>().unwrap_or(0)
+    }
+}
+
+/// Format millicores as a human-readable CPU string.
+pub fn fmt_cpu(millis: i64) -> String {
+    if millis == 0 { return "?".to_string(); }
+    if millis % 1000 == 0 { format!("{}", millis / 1000) }
+    else { format!("{}m", millis) }
+}
+
+/// Format bytes as a human-readable memory string.
+pub fn fmt_memory(bytes: i64) -> String {
+    const GI: i64 = 1024 * 1024 * 1024;
+    const MI: i64 = 1024 * 1024;
+    if bytes == 0 { return "?".to_string(); }
+    if bytes >= GI { format!("{:.1}Gi", bytes as f64 / GI as f64) }
+    else if bytes >= MI { format!("{:.0}Mi", bytes as f64 / MI as f64) }
+    else { format!("{} Ki", bytes / 1024) }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
