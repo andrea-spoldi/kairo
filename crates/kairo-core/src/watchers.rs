@@ -1,13 +1,18 @@
 use std::collections::HashMap;
 
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{Event as K8sEvent, Namespace, Pod};
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::{
+    ConfigMap, Event as K8sEvent, Namespace, Node, Pod, Service,
+};
 use kube::{Api, runtime::watcher};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 
-use crate::{CoreError, KubeClient, models::{ClusterEvent, PodSummary}};
+use crate::{CoreError, KubeClient, models::{
+    ClusterEvent, ConfigMapSummary, DeploymentSummary, NodeSummary, PodSummary, ServiceSummary,
+}};
 
 /// Watch pods in the given namespace (or all namespaces if `None`) and send
 /// a full sorted `Vec<PodSummary>` snapshot on every change.
@@ -159,6 +164,149 @@ impl NamespaceWatcher {
                     Ok(_) => {}
                     Err(e) => warn!("namespace watcher error: {e}"),
                 }
+            }
+        })
+    }
+}
+
+// ── Generic snapshot helper ───────────────────────────────────────────────────
+
+fn meta_key(ns: Option<&str>, name: Option<&str>) -> String {
+    format!("{}/{}", ns.unwrap_or(""), name.unwrap_or(""))
+}
+
+async fn send_snap<S: Clone>(store: &HashMap<String, S>, tx: &mpsc::Sender<Vec<S>>) -> bool {
+    let items: Vec<S> = {
+        let mut keys: Vec<&String> = store.keys().collect();
+        keys.sort();
+        keys.into_iter().map(|k| store[k].clone()).collect()
+    };
+    tx.send(items).await.is_ok()
+}
+
+// ── DeploymentWatcher ─────────────────────────────────────────────────────────
+
+/// Watches Deployments cluster-wide and sends full sorted snapshots.
+pub struct DeploymentWatcher;
+
+impl DeploymentWatcher {
+    pub fn start(client: KubeClient, tx: mpsc::Sender<Vec<DeploymentSummary>>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let api: Api<Deployment> = Api::all(client.client);
+            let mut store: HashMap<String, DeploymentSummary> = HashMap::new();
+            let mut stream = watcher(api, watcher::Config::default()).boxed();
+            while let Some(ev) = stream.next().await {
+                let snap = match ev {
+                    Ok(watcher::Event::Apply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), DeploymentSummary::from(r)); true
+                    }
+                    Ok(watcher::Event::Delete(r)) => {
+                        store.remove(&meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref())); true
+                    }
+                    Ok(watcher::Event::Init) => { store.clear(); false }
+                    Ok(watcher::Event::InitApply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), DeploymentSummary::from(r)); false
+                    }
+                    Ok(watcher::Event::InitDone) => true,
+                    Err(e) => { warn!("deployment watcher: {e}"); false }
+                };
+                if snap && !send_snap(&store, &tx).await { break; }
+            }
+        })
+    }
+}
+
+// ── ServiceWatcher ────────────────────────────────────────────────────────────
+
+/// Watches Services cluster-wide and sends full sorted snapshots.
+pub struct ServiceWatcher;
+
+impl ServiceWatcher {
+    pub fn start(client: KubeClient, tx: mpsc::Sender<Vec<ServiceSummary>>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let api: Api<Service> = Api::all(client.client);
+            let mut store: HashMap<String, ServiceSummary> = HashMap::new();
+            let mut stream = watcher(api, watcher::Config::default()).boxed();
+            while let Some(ev) = stream.next().await {
+                let snap = match ev {
+                    Ok(watcher::Event::Apply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), ServiceSummary::from(r)); true
+                    }
+                    Ok(watcher::Event::Delete(r)) => {
+                        store.remove(&meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref())); true
+                    }
+                    Ok(watcher::Event::Init) => { store.clear(); false }
+                    Ok(watcher::Event::InitApply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), ServiceSummary::from(r)); false
+                    }
+                    Ok(watcher::Event::InitDone) => true,
+                    Err(e) => { warn!("service watcher: {e}"); false }
+                };
+                if snap && !send_snap(&store, &tx).await { break; }
+            }
+        })
+    }
+}
+
+// ── ConfigMapWatcher ──────────────────────────────────────────────────────────
+
+/// Watches ConfigMaps cluster-wide and sends full sorted snapshots.
+pub struct ConfigMapWatcher;
+
+impl ConfigMapWatcher {
+    pub fn start(client: KubeClient, tx: mpsc::Sender<Vec<ConfigMapSummary>>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let api: Api<ConfigMap> = Api::all(client.client);
+            let mut store: HashMap<String, ConfigMapSummary> = HashMap::new();
+            let mut stream = watcher(api, watcher::Config::default()).boxed();
+            while let Some(ev) = stream.next().await {
+                let snap = match ev {
+                    Ok(watcher::Event::Apply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), ConfigMapSummary::from(r)); true
+                    }
+                    Ok(watcher::Event::Delete(r)) => {
+                        store.remove(&meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref())); true
+                    }
+                    Ok(watcher::Event::Init) => { store.clear(); false }
+                    Ok(watcher::Event::InitApply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), ConfigMapSummary::from(r)); false
+                    }
+                    Ok(watcher::Event::InitDone) => true,
+                    Err(e) => { warn!("configmap watcher: {e}"); false }
+                };
+                if snap && !send_snap(&store, &tx).await { break; }
+            }
+        })
+    }
+}
+
+// ── NodeWatcher ───────────────────────────────────────────────────────────────
+
+/// Watches Nodes cluster-wide and sends full sorted snapshots.
+pub struct NodeWatcher;
+
+impl NodeWatcher {
+    pub fn start(client: KubeClient, tx: mpsc::Sender<Vec<NodeSummary>>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let api: Api<Node> = Api::all(client.client);
+            let mut store: HashMap<String, NodeSummary> = HashMap::new();
+            let mut stream = watcher(api, watcher::Config::default()).boxed();
+            while let Some(ev) = stream.next().await {
+                let snap = match ev {
+                    Ok(watcher::Event::Apply(r)) => {
+                        store.insert(r.metadata.name.clone().unwrap_or_default(), NodeSummary::from(r)); true
+                    }
+                    Ok(watcher::Event::Delete(r)) => {
+                        store.remove(&r.metadata.name.unwrap_or_default()); true
+                    }
+                    Ok(watcher::Event::Init) => { store.clear(); false }
+                    Ok(watcher::Event::InitApply(r)) => {
+                        store.insert(r.metadata.name.clone().unwrap_or_default(), NodeSummary::from(r)); false
+                    }
+                    Ok(watcher::Event::InitDone) => true,
+                    Err(e) => { warn!("node watcher: {e}"); false }
+                };
+                if snap && !send_snap(&store, &tx).await { break; }
             }
         })
     }

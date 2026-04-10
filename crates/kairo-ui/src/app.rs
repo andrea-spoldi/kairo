@@ -16,9 +16,9 @@ use gpui_component::{
     select::{Select, SelectEvent, SelectState},
 };
 use kairo_core::{
-    ClusterEvent, KubeClient,
+    ClusterEvent, ConfigMapSummary, DeploymentSummary, KubeClient, NodeSummary, ServiceSummary,
     models::PodSummary,
-    watchers::{ClusterEventWatcher, NamespaceWatcher},
+    watchers::{ClusterEventWatcher, ConfigMapWatcher, DeploymentWatcher, NamespaceWatcher, NodeWatcher, ServiceWatcher},
 };
 use tracing::{error, info};
 
@@ -33,6 +33,9 @@ use crate::{
         log_viewer::{ContainerSelected, LogViewerPanel},
         pod_detail::PodDetailPanel,
         pod_list::{PodListPanel, PodSelected},
+        resource_list::{
+            ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ServiceListPanel,
+        },
     },
     kube_runtime,
     theme::{
@@ -51,6 +54,10 @@ enum KubeEvent {
     Connected(KubeClient),
     Namespace(String),
     PodList(Vec<PodSummary>),
+    DeploymentList(Vec<DeploymentSummary>),
+    ServiceList(Vec<ServiceSummary>),
+    ConfigMapList(Vec<ConfigMapSummary>),
+    NodeList(Vec<NodeSummary>),
     PodDetail(kairo_core::models::PodDetail),
     PodDetailError(String),
     LogLine(String),
@@ -71,6 +78,10 @@ pub struct Workspace {
     health_panel: Entity<ClusterHealthPanel>,
     event_feed: Entity<EventFeedPanel>,
     pod_list_panel: Entity<PodListPanel>,
+    deployment_panel: Entity<DeploymentListPanel>,
+    service_panel: Entity<ServiceListPanel>,
+    configmap_panel: Entity<ConfigMapListPanel>,
+    node_panel: Entity<NodeListPanel>,
     pod_detail_panel: Entity<PodDetailPanel>,
     log_panel: Entity<LogViewerPanel>,
     palette: Entity<CommandPalette>,
@@ -141,15 +152,23 @@ impl Workspace {
         let health_panel = cx.new(|cx| ClusterHealthPanel::new(cx));
         let event_feed = cx.new(|cx| EventFeedPanel::new(cx));
         let pod_list_panel = cx.new(|cx| PodListPanel::new(window, cx));
+        let deployment_panel = cx.new(|cx| DeploymentListPanel::new(cx));
+        let service_panel = cx.new(|cx| ServiceListPanel::new(cx));
+        let configmap_panel = cx.new(|cx| ConfigMapListPanel::new(cx));
+        let node_panel = cx.new(|cx| NodeListPanel::new(cx));
         let pod_detail_panel = cx.new(|cx| PodDetailPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
 
         let left_panel = DockItem::tab(health_panel.clone(), &weak_dock, window, cx);
-        // Center dock: Pods tab + Events tab.
+        // Center dock: Pods | Deployments | Services | ConfigMaps | Nodes | Events
         let center = DockItem::tabs(
             vec![
-                Arc::new(pod_list_panel.clone()) as Arc<dyn PanelView>,
-                Arc::new(event_feed.clone()) as Arc<dyn PanelView>,
+                Arc::new(pod_list_panel.clone())    as Arc<dyn PanelView>,
+                Arc::new(deployment_panel.clone())  as Arc<dyn PanelView>,
+                Arc::new(service_panel.clone())     as Arc<dyn PanelView>,
+                Arc::new(configmap_panel.clone())   as Arc<dyn PanelView>,
+                Arc::new(node_panel.clone())        as Arc<dyn PanelView>,
+                Arc::new(event_feed.clone())        as Arc<dyn PanelView>,
             ],
             &weak_dock,
             window,
@@ -279,6 +298,10 @@ impl Workspace {
             health_panel,
             event_feed,
             pod_list_panel,
+            deployment_panel,
+            service_panel,
+            configmap_panel,
+            node_panel,
             pod_detail_panel,
             log_panel,
             palette,
@@ -371,6 +394,30 @@ impl Workspace {
                 });
                 // Keep palette index up to date.
                 self.palette.update(cx, |p, cx| p.set_pods(&pods_ref, cx));
+            }
+            KubeEvent::DeploymentList(items) => {
+                let count = items.len();
+                self.deployment_panel.update(cx, |p, cx| p.set_items(items, cx));
+                self.health_panel.update(cx, |p, _| p.resource_counts.deployments = count);
+                self.health_panel.update(cx, |_, cx| cx.notify());
+            }
+            KubeEvent::ServiceList(items) => {
+                let count = items.len();
+                self.service_panel.update(cx, |p, cx| p.set_items(items, cx));
+                self.health_panel.update(cx, |p, _| p.resource_counts.services = count);
+                self.health_panel.update(cx, |_, cx| cx.notify());
+            }
+            KubeEvent::ConfigMapList(items) => {
+                let count = items.len();
+                self.configmap_panel.update(cx, |p, cx| p.set_items(items, cx));
+                self.health_panel.update(cx, |p, _| p.resource_counts.configmaps = count);
+                self.health_panel.update(cx, |_, cx| cx.notify());
+            }
+            KubeEvent::NodeList(items) => {
+                let count = items.len();
+                self.node_panel.update(cx, |p, cx| p.set_items(items, cx));
+                self.health_panel.update(cx, |p, _| p.resource_counts.nodes = count);
+                self.health_panel.update(cx, |_, cx| cx.notify());
             }
             KubeEvent::PodDetail(detail) => {
                 // Collect container names before moving detail.
@@ -486,6 +533,10 @@ impl Workspace {
         self.pod_list_panel.update(cx, |panel, cx| {
             panel.set_pods(vec![], cx);
         });
+        self.deployment_panel.update(cx, |p, cx| p.set_items(vec![], cx));
+        self.service_panel.update(cx, |p, cx| p.set_items(vec![], cx));
+        self.configmap_panel.update(cx, |p, cx| p.set_items(vec![], cx));
+        self.node_panel.update(cx, |p, cx| p.set_items(vec![], cx));
         self.pod_detail_panel.update(cx, |panel, cx| {
             panel.clear_detail();
             cx.notify();
@@ -566,10 +617,11 @@ impl Workspace {
                     // Start cluster event watcher sub-task.
                     let ev_events = events.clone();
                     let ev_abort = abort_flag.clone();
+                    let ev_client = client.clone();
                     tokio::spawn(async move {
                         let (ev_tx, mut ev_rx) =
                             tokio::sync::mpsc::channel::<ClusterEvent>(64);
-                        let _watcher = ClusterEventWatcher::start(client, ev_tx);
+                        let _watcher = ClusterEventWatcher::start(ev_client, ev_tx);
                         while let Some(ev) = ev_rx.recv().await {
                             if ev_abort.load(Ordering::SeqCst) {
                                 break;
@@ -580,6 +632,29 @@ impl Workspace {
                                 .push_back(KubeEvent::WarningEvent(ev));
                         }
                     });
+
+                    // ── Resource watchers ─────────────────────────────────────
+
+                    macro_rules! spawn_resource_watcher {
+                        ($watcher:ident, $variant:ident, $label:literal) => {{
+                            let res_events = events.clone();
+                            let res_abort = abort_flag.clone();
+                            let res_client = client.clone();
+                            tokio::spawn(async move {
+                                let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+                                let _w = $watcher::start(res_client, tx);
+                                while let Some(items) = rx.recv().await {
+                                    if res_abort.load(Ordering::SeqCst) { break; }
+                                    res_events.lock().unwrap().push_back(KubeEvent::$variant(items));
+                                }
+                            });
+                        }};
+                    }
+
+                    spawn_resource_watcher!(DeploymentWatcher, DeploymentList, "deployment");
+                    spawn_resource_watcher!(ServiceWatcher,    ServiceList,    "service");
+                    spawn_resource_watcher!(ConfigMapWatcher,  ConfigMapList,  "configmap");
+                    spawn_resource_watcher!(NodeWatcher,       NodeList,       "node");
                 }
                 Err(e) => {
                     events

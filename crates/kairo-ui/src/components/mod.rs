@@ -1,5 +1,6 @@
 pub mod cluster_health;
 pub mod command_palette;
+pub mod resource_list;
 pub mod context_switcher;
 pub mod event_feed;
 pub mod log_viewer;

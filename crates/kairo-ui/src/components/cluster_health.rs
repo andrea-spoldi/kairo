@@ -7,6 +7,8 @@ use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
 use kairo_core::models::{ClusterEvent, PodSummary};
 
+use crate::components::resource_list::{ResourceCounts, render_resource_tree};
+
 use crate::theme::{
     BORDER, HOVER_BG, SELECTED_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING,
     SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
@@ -30,13 +32,14 @@ struct PodCounts {
     total: usize,
 }
 
-/// Left sidebar panel — cluster health overview (pod counts + namespace tree + recent warnings).
+/// Left sidebar panel — cluster health overview (pod counts + resource counts + namespace tree + recent warnings).
 pub struct ClusterHealthPanel {
     focus_handle: FocusHandle,
     cluster: PodCounts,
     namespaces: BTreeMap<String, PodCounts>,
     warnings: VecDeque<ClusterEvent>,
     active_namespace: SharedString,
+    pub resource_counts: ResourceCounts,
 }
 
 impl ClusterHealthPanel {
@@ -47,6 +50,7 @@ impl ClusterHealthPanel {
             namespaces: BTreeMap::new(),
             warnings: VecDeque::new(),
             active_namespace: SharedString::from("All"),
+            resource_counts: ResourceCounts::default(),
         }
     }
 
@@ -99,6 +103,7 @@ impl ClusterHealthPanel {
         self.cluster = PodCounts::default();
         self.namespaces.clear();
         self.warnings.clear();
+        self.resource_counts = ResourceCounts::default();
         cx.notify();
     }
 }
@@ -229,6 +234,8 @@ impl Render for ClusterHealthPanel {
         // ── Recent warnings ───────────────────────────────────────────────────
         let warnings_section = render_warnings_section(&self.warnings);
 
+        let resource_tree = render_resource_tree(&self.resource_counts);
+
         // ── Assemble ──────────────────────────────────────────────────────────
         div()
             .size_full()
@@ -238,6 +245,7 @@ impl Render for ClusterHealthPanel {
             .p_3()
             .gap_4()
             .child(counts)
+            .child(resource_tree)
             .child(ns_section)
             .child(warnings_section)
     }
