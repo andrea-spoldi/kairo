@@ -93,6 +93,10 @@ pub struct Workspace {
     palette: Entity<CommandPalette>,
     /// Full unfiltered pod list from the watcher.
     all_pods: Vec<PodSummary>,
+    /// Full unfiltered lists for namespaced resources.
+    all_deployments: Vec<DeploymentSummary>,
+    all_services: Vec<ServiceSummary>,
+    all_configmaps: Vec<ConfigMapSummary>,
     /// Context names loaded from kubeconfig.
     contexts: Vec<SharedString>,
     /// Sorted list of namespace names seen from the current cluster.
@@ -358,6 +362,9 @@ impl Workspace {
             log_panel,
             palette,
             all_pods: Vec::new(),
+            all_deployments: Vec::new(),
+            all_services: Vec::new(),
+            all_configmaps: Vec::new(),
             contexts: contexts.clone(),
             namespaces: Vec::new(),
             active_namespace: SharedString::from("All"),
@@ -448,22 +455,22 @@ impl Workspace {
                 self.palette.update(cx, |p, cx| p.set_pods(&pods_ref, cx));
             }
             KubeEvent::DeploymentList(items) => {
-                let count = items.len();
-                self.deployment_panel.update(cx, |p, cx| p.set_items(items, cx));
-                self.health_panel.update(cx, |p, _| p.resource_counts.deployments = count);
+                self.health_panel.update(cx, |p, _| p.resource_counts.deployments = items.len());
                 self.health_panel.update(cx, |_, cx| cx.notify());
+                self.all_deployments = items;
+                self.apply_namespace_filter(cx);
             }
             KubeEvent::ServiceList(items) => {
-                let count = items.len();
-                self.service_panel.update(cx, |p, cx| p.set_items(items, cx));
-                self.health_panel.update(cx, |p, _| p.resource_counts.services = count);
+                self.health_panel.update(cx, |p, _| p.resource_counts.services = items.len());
                 self.health_panel.update(cx, |_, cx| cx.notify());
+                self.all_services = items;
+                self.apply_namespace_filter(cx);
             }
             KubeEvent::ConfigMapList(items) => {
-                let count = items.len();
-                self.configmap_panel.update(cx, |p, cx| p.set_items(items, cx));
-                self.health_panel.update(cx, |p, _| p.resource_counts.configmaps = count);
+                self.health_panel.update(cx, |p, _| p.resource_counts.configmaps = items.len());
                 self.health_panel.update(cx, |_, cx| cx.notify());
+                self.all_configmaps = items;
+                self.apply_namespace_filter(cx);
             }
             KubeEvent::NodeList(items) => {
                 let count = items.len();
@@ -588,6 +595,9 @@ impl Workspace {
 
         // Reset namespace and pod state.
         self.all_pods.clear();
+        self.all_deployments.clear();
+        self.all_services.clear();
+        self.all_configmaps.clear();
         self.namespaces.clear();
         self.active_namespace = SharedString::from("All");
         self.active_context = Some(SharedString::from(context.clone()));
@@ -798,18 +808,36 @@ impl Workspace {
 
     /// Push the namespace-filtered pod list to the panel (which re-applies search filters).
     fn apply_namespace_filter(&mut self, cx: &mut Context<Self>) {
-        let filtered: Vec<PodSummary> = if self.active_namespace.as_ref() == "All" {
+        let ns = self.active_namespace.as_ref();
+        let all = ns == "All";
+
+        let pods = if all {
             self.all_pods.clone()
         } else {
-            self.all_pods
-                .iter()
-                .filter(|p| p.namespace.as_str() == self.active_namespace.as_ref())
-                .cloned()
-                .collect()
+            self.all_pods.iter().filter(|p| p.namespace.as_str() == ns).cloned().collect()
         };
-        self.pod_list_panel.update(cx, |panel, cx| {
-            panel.set_pods(filtered, cx);
-        });
+        self.pod_list_panel.update(cx, |panel, cx| panel.set_pods(pods, cx));
+
+        let deployments = if all {
+            self.all_deployments.clone()
+        } else {
+            self.all_deployments.iter().filter(|d| d.namespace.as_str() == ns).cloned().collect()
+        };
+        self.deployment_panel.update(cx, |p, cx| p.set_items(deployments, cx));
+
+        let services = if all {
+            self.all_services.clone()
+        } else {
+            self.all_services.iter().filter(|s| s.namespace.as_str() == ns).cloned().collect()
+        };
+        self.service_panel.update(cx, |p, cx| p.set_items(services, cx));
+
+        let configmaps = if all {
+            self.all_configmaps.clone()
+        } else {
+            self.all_configmaps.iter().filter(|c| c.namespace.as_str() == ns).cloned().collect()
+        };
+        self.configmap_panel.update(cx, |p, cx| p.set_items(configmaps, cx));
     }
 
     /// Build the namespace select items: "All" sentinel + sorted namespace names.
