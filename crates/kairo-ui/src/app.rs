@@ -34,8 +34,10 @@ use crate::{
         pod_detail::PodDetailPanel,
         pod_list::{PodListPanel, PodSelected},
         resource_list::{
-            ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ServiceListPanel,
+            ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ResourceSelected,
+            ServiceListPanel,
         },
+        yaml_viewer::{yaml_title, YamlViewerPanel},
     },
     kube_runtime,
     theme::{
@@ -60,6 +62,9 @@ enum KubeEvent {
     NodeList(Vec<NodeSummary>),
     PodDetail(kairo_core::models::PodDetail),
     PodDetailError(String),
+    /// YAML fetched for a resource — (panel title, yaml string).
+    ResourceYaml(String, String),
+    ResourceYamlError(String),
     LogLine(String),
     LogError(String),
     WarningEvent(ClusterEvent),
@@ -83,6 +88,7 @@ pub struct Workspace {
     configmap_panel: Entity<ConfigMapListPanel>,
     node_panel: Entity<NodeListPanel>,
     pod_detail_panel: Entity<PodDetailPanel>,
+    yaml_panel: Entity<YamlViewerPanel>,
     log_panel: Entity<LogViewerPanel>,
     palette: Entity<CommandPalette>,
     /// Full unfiltered pod list from the watcher.
@@ -157,6 +163,7 @@ impl Workspace {
         let configmap_panel = cx.new(|cx| ConfigMapListPanel::new(cx));
         let node_panel = cx.new(|cx| NodeListPanel::new(cx));
         let pod_detail_panel = cx.new(|cx| PodDetailPanel::new(cx));
+        let yaml_panel = cx.new(|cx| YamlViewerPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
 
         let left_panel = DockItem::tab(health_panel.clone(), &weak_dock, window, cx);
@@ -174,13 +181,22 @@ impl Workspace {
             window,
             cx,
         );
-        let right_panel = DockItem::tab(pod_detail_panel.clone(), &weak_dock, window, cx);
+        // Right dock: YAML viewer (first) + Pod Detail (second)
+        let right = DockItem::tabs(
+            vec![
+                Arc::new(yaml_panel.clone())       as Arc<dyn PanelView>,
+                Arc::new(pod_detail_panel.clone()) as Arc<dyn PanelView>,
+            ],
+            &weak_dock,
+            window,
+            cx,
+        );
         let bottom_panel = DockItem::tab(log_panel.clone(), &weak_dock, window, cx);
 
         dock_area.update(cx, |dock, cx| {
             dock.set_left_dock(left_panel, Some(px(220.)), true, window, cx);
             dock.set_center(center, window, cx);
-            dock.set_right_dock(right_panel, Some(px(340.)), false, window, cx);
+            dock.set_right_dock(right, Some(px(380.)), false, window, cx);
             dock.set_bottom_dock(bottom_panel, Some(px(220.)), false, window, cx);
         });
 
@@ -237,6 +253,40 @@ impl Workspace {
             window,
             |this, _, event: &PodSelected, _window, cx| {
                 this.on_pod_selected(&event.name, &event.namespace, cx);
+            },
+        )
+        .detach();
+
+        // ── Subscribe to resource row selection (YAML viewer) ────────────────
+        cx.subscribe_in(
+            &deployment_panel,
+            window,
+            |this, _, ev: &ResourceSelected, _w, _cx| {
+                this.fetch_resource_yaml("Deployment", &ev.namespace, &ev.name);
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &service_panel,
+            window,
+            |this, _, ev: &ResourceSelected, _w, _cx| {
+                this.fetch_resource_yaml("Service", &ev.namespace, &ev.name);
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &configmap_panel,
+            window,
+            |this, _, ev: &ResourceSelected, _w, _cx| {
+                this.fetch_resource_yaml("ConfigMap", &ev.namespace, &ev.name);
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &node_panel,
+            window,
+            |this, _, ev: &ResourceSelected, _w, _cx| {
+                this.fetch_resource_yaml("Node", "", &ev.name);
             },
         )
         .detach();
@@ -303,6 +353,7 @@ impl Workspace {
             configmap_panel,
             node_panel,
             pod_detail_panel,
+            yaml_panel,
             log_panel,
             palette,
             all_pods: Vec::new(),
@@ -456,6 +507,20 @@ impl Workspace {
             KubeEvent::PodDetailError(msg) => {
                 error!("pod detail fetch error: {msg}");
             }
+            KubeEvent::ResourceYaml(title, yaml) => {
+                self.yaml_panel.update(cx, |panel, cx| {
+                    panel.set_yaml(title, yaml);
+                    cx.notify();
+                });
+                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
+                    self.dock_area.update(cx, |dock, cx| {
+                        dock.toggle_dock(DockPlacement::Right, window, cx);
+                    });
+                }
+            }
+            KubeEvent::ResourceYamlError(msg) => {
+                error!("yaml fetch error: {msg}");
+            }
             KubeEvent::LogLine(line) => {
                 self.log_panel.update(cx, |panel, cx| {
                     panel.push_line(line, cx);
@@ -541,6 +606,7 @@ impl Workspace {
             panel.clear_detail();
             cx.notify();
         });
+        self.yaml_panel.update(cx, |panel, _| panel.clear());
         // Stop log stream and clear log panel.
         self.log_abort.store(true, Ordering::SeqCst);
         self.log_abort = Arc::new(AtomicBool::new(false));
@@ -686,6 +752,34 @@ impl Workspace {
                         .lock()
                         .unwrap()
                         .push_back(KubeEvent::PodDetailError(e.to_string()));
+                }
+            }
+        });
+    }
+
+    /// Fetch raw YAML for a resource and push it to the YAML viewer.
+    fn fetch_resource_yaml(&mut self, kind: &str, namespace: &str, name: &str) {
+        let Some(client) = self.kube_client.clone() else { return };
+        let events = self.events.clone();
+        let kind = kind.to_string();
+        let namespace = namespace.to_string();
+        let name = name.to_string();
+
+        kube_runtime::handle().spawn(async move {
+            let title = yaml_title(&kind, Some(namespace.as_str()).filter(|s| !s.is_empty()), &name);
+            let result = match kind.as_str() {
+                "Deployment" => client.fetch_deployment_yaml(&namespace, &name).await,
+                "Service"    => client.fetch_service_yaml(&namespace, &name).await,
+                "ConfigMap"  => client.fetch_configmap_yaml(&namespace, &name).await,
+                "Node"       => client.fetch_node_yaml(&name).await,
+                _            => client.fetch_pod_yaml(&namespace, &name).await,
+            };
+            match result {
+                Ok(yaml) => {
+                    events.lock().unwrap().push_back(KubeEvent::ResourceYaml(title, yaml));
+                }
+                Err(e) => {
+                    events.lock().unwrap().push_back(KubeEvent::ResourceYamlError(e.to_string()));
                 }
             }
         });
