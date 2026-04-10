@@ -731,6 +731,7 @@ impl Workspace {
 
     /// Fetch pod detail + events asynchronously when a pod row is clicked.
     fn on_pod_selected(&mut self, name: &str, namespace: &str, _cx: &mut Context<Self>) {
+        self.fetch_resource_yaml("Pod", namespace, name);
         let Some(client) = self.kube_client.clone() else { return };
         let events = self.events.clone();
         let name = name.to_string();
