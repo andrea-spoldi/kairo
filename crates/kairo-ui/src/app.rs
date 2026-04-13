@@ -31,7 +31,7 @@ use crate::{
         command_palette::{CommandPalette, PaletteAction},
         event_feed::EventFeedPanel,
         log_viewer::{ContainerSelected, LogViewerPanel},
-        pod_detail::DetailPanel,
+        pod_detail::{DetailPanel, ResourceDetail},
         pod_list::{PodListPanel, PodSelected},
         resource_list::{
             ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ResourceSelected,
@@ -268,12 +268,8 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Deployment", &ev.namespace, &ev.name);
-                let name = ev.name.clone(); let ns = ev.namespace.clone();
-                if let Some(d) = this.all_deployments.iter().find(|d| d.name == name && d.namespace == ns).cloned() {
-                    this.detail_panel.update(cx, |p, cx| { p.set_deployment(d); cx.notify(); });
-                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
-                    }
+                if let Some(d) = this.all_deployments.iter().find(|d| d.name == ev.name && d.namespace == ev.namespace).cloned() {
+                    this.show_detail(ResourceDetail::Deployment(d), window, cx);
                 }
             },
         )
@@ -283,12 +279,8 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Service", &ev.namespace, &ev.name);
-                let name = ev.name.clone(); let ns = ev.namespace.clone();
-                if let Some(s) = this.all_services.iter().find(|s| s.name == name && s.namespace == ns).cloned() {
-                    this.detail_panel.update(cx, |p, cx| { p.set_service(s); cx.notify(); });
-                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
-                    }
+                if let Some(s) = this.all_services.iter().find(|s| s.name == ev.name && s.namespace == ev.namespace).cloned() {
+                    this.show_detail(ResourceDetail::Service(s), window, cx);
                 }
             },
         )
@@ -298,12 +290,8 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("ConfigMap", &ev.namespace, &ev.name);
-                let name = ev.name.clone(); let ns = ev.namespace.clone();
-                if let Some(c) = this.all_configmaps.iter().find(|c| c.name == name && c.namespace == ns).cloned() {
-                    this.detail_panel.update(cx, |p, cx| { p.set_configmap(c); cx.notify(); });
-                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
-                    }
+                if let Some(c) = this.all_configmaps.iter().find(|c| c.name == ev.name && c.namespace == ev.namespace).cloned() {
+                    this.show_detail(ResourceDetail::ConfigMap(c), window, cx);
                 }
             },
         )
@@ -313,12 +301,8 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Node", "", &ev.name);
-                let name = ev.name.clone();
-                if let Some(n) = this.all_nodes.iter().find(|n| n.name == name).cloned() {
-                    this.detail_panel.update(cx, |p, cx| { p.set_node(n); cx.notify(); });
-                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
-                    }
+                if let Some(n) = this.all_nodes.iter().find(|n| n.name == ev.name).cloned() {
+                    this.show_detail(ResourceDetail::Node(n), window, cx);
                 }
             },
         )
@@ -515,16 +499,7 @@ impl Workspace {
                 let pod_name = detail.summary.name.clone();
                 let namespace = detail.summary.namespace.clone();
 
-                self.detail_panel.update(cx, |panel, cx| {
-                    panel.set_pod(detail);
-                    cx.notify();
-                });
-                // Pod detail + log viewer both live in the bottom dock.
-                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                    self.dock_area.update(cx, |dock, cx| {
-                        dock.toggle_dock(DockPlacement::Bottom, window, cx);
-                    });
-                }
+                self.show_detail(ResourceDetail::Pod(detail), window, cx);
 
                 // Start log streaming for first container.
                 if let Some(first_container) = containers.first().cloned() {
@@ -546,11 +521,7 @@ impl Workspace {
                     panel.set_yaml(title, yaml);
                     cx.notify();
                 });
-                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                    self.dock_area.update(cx, |dock, cx| {
-                        dock.toggle_dock(DockPlacement::Bottom, window, cx);
-                    });
-                }
+                self.ensure_bottom_dock_open(window, cx);
             }
             KubeEvent::ResourceYamlError(msg) => {
                 error!("yaml fetch error: {msg}");
@@ -835,6 +806,19 @@ impl Workspace {
             p.set_namespaces(&namespaces, cx);
             p.show(window, cx);
         });
+    }
+
+    fn ensure_bottom_dock_open(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+            self.dock_area.update(cx, |dock, cx| {
+                dock.toggle_dock(DockPlacement::Bottom, window, cx);
+            });
+        }
+    }
+
+    fn show_detail(&mut self, detail: ResourceDetail, window: &mut Window, cx: &mut Context<Self>) {
+        self.detail_panel.update(cx, |p, cx| { p.set_detail(detail); cx.notify(); });
+        self.ensure_bottom_dock_open(window, cx);
     }
 
     /// Push the namespace-filtered pod list to the panel (which re-applies search filters).
