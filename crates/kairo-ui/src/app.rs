@@ -47,7 +47,7 @@ use crate::{
 };
 
 const DOCK_ID: &str = "kairo-dock";
-const DOCK_VERSION: usize = 2;
+const DOCK_VERSION: usize = 3;
 const POLL_INTERVAL_MS: u64 = 100;
 
 // ── Event queue shared between the tokio kube tasks and the GPUI poll loop ──
@@ -185,12 +185,12 @@ impl Workspace {
             window,
             cx,
         );
-        // Right dock: YAML viewer only — single panel, no tab-switching needed.
-        let right = DockItem::tab(yaml_panel.clone(), &weak_dock, window, cx);
-        // Bottom dock: Pod Detail (first) + Log viewer (second)
+        // Bottom dock: Pod Detail | YAML | Logs — all detail views together.
+        // Right dock is reserved for the AI panel (Phase 15).
         let bottom = DockItem::tabs(
             vec![
                 Arc::new(pod_detail_panel.clone()) as Arc<dyn PanelView>,
+                Arc::new(yaml_panel.clone())       as Arc<dyn PanelView>,
                 Arc::new(log_panel.clone())        as Arc<dyn PanelView>,
             ],
             &weak_dock,
@@ -201,7 +201,6 @@ impl Workspace {
         dock_area.update(cx, |dock, cx| {
             dock.set_left_dock(left_panel, Some(px(220.)), true, window, cx);
             dock.set_center(center, window, cx);
-            dock.set_right_dock(right, Some(px(380.)), false, window, cx);
             dock.set_bottom_dock(bottom, Some(px(280.)), false, window, cx);
         });
 
@@ -516,9 +515,9 @@ impl Workspace {
                     panel.set_yaml(title, yaml);
                     cx.notify();
                 });
-                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
+                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
                     self.dock_area.update(cx, |dock, cx| {
-                        dock.toggle_dock(DockPlacement::Right, window, cx);
+                        dock.toggle_dock(DockPlacement::Bottom, window, cx);
                     });
                 }
             }
