@@ -31,7 +31,7 @@ use crate::{
         command_palette::{CommandPalette, PaletteAction},
         event_feed::EventFeedPanel,
         log_viewer::{ContainerSelected, LogViewerPanel},
-        pod_detail::PodDetailPanel,
+        pod_detail::DetailPanel,
         pod_list::{PodListPanel, PodSelected},
         resource_list::{
             ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ResourceSelected,
@@ -47,7 +47,7 @@ use crate::{
 };
 
 const DOCK_ID: &str = "kairo-dock";
-const DOCK_VERSION: usize = 3;
+const DOCK_VERSION: usize = 4;
 const POLL_INTERVAL_MS: u64 = 100;
 
 // ── Event queue shared between the tokio kube tasks and the GPUI poll loop ──
@@ -87,7 +87,7 @@ pub struct Workspace {
     service_panel: Entity<ServiceListPanel>,
     configmap_panel: Entity<ConfigMapListPanel>,
     node_panel: Entity<NodeListPanel>,
-    pod_detail_panel: Entity<PodDetailPanel>,
+    detail_panel: Entity<DetailPanel>,
     yaml_panel: Entity<YamlViewerPanel>,
     log_panel: Entity<LogViewerPanel>,
     palette: Entity<CommandPalette>,
@@ -97,6 +97,7 @@ pub struct Workspace {
     all_deployments: Vec<DeploymentSummary>,
     all_services: Vec<ServiceSummary>,
     all_configmaps: Vec<ConfigMapSummary>,
+    all_nodes: Vec<NodeSummary>,
     /// Context names loaded from kubeconfig.
     contexts: Vec<SharedString>,
     /// Sorted list of namespace names seen from the current cluster.
@@ -166,7 +167,7 @@ impl Workspace {
         let service_panel = cx.new(|cx| ServiceListPanel::new(cx));
         let configmap_panel = cx.new(|cx| ConfigMapListPanel::new(cx));
         let node_panel = cx.new(|cx| NodeListPanel::new(cx));
-        let pod_detail_panel = cx.new(|cx| PodDetailPanel::new(cx));
+        let detail_panel = cx.new(|cx| DetailPanel::new(cx));
         let yaml_panel = cx.new(|cx| YamlViewerPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
 
@@ -185,13 +186,13 @@ impl Workspace {
             window,
             cx,
         );
-        // Bottom dock: Pod Detail | YAML | Logs — all detail views together.
+        // Bottom dock: Details | YAML | Logs — all detail views together.
         // Right dock is reserved for the AI panel (Phase 15).
         let bottom = DockItem::tabs(
             vec![
-                Arc::new(pod_detail_panel.clone()) as Arc<dyn PanelView>,
-                Arc::new(yaml_panel.clone())       as Arc<dyn PanelView>,
-                Arc::new(log_panel.clone())        as Arc<dyn PanelView>,
+                Arc::new(detail_panel.clone()) as Arc<dyn PanelView>,
+                Arc::new(yaml_panel.clone())   as Arc<dyn PanelView>,
+                Arc::new(log_panel.clone())    as Arc<dyn PanelView>,
             ],
             &weak_dock,
             window,
@@ -261,36 +262,64 @@ impl Workspace {
         )
         .detach();
 
-        // ── Subscribe to resource row selection (YAML viewer) ────────────────
+        // ── Subscribe to resource row selection (Details + YAML viewer) ──────
         cx.subscribe_in(
             &deployment_panel,
             window,
-            |this, _, ev: &ResourceSelected, _w, _cx| {
+            |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Deployment", &ev.namespace, &ev.name);
+                let name = ev.name.clone(); let ns = ev.namespace.clone();
+                if let Some(d) = this.all_deployments.iter().find(|d| d.name == name && d.namespace == ns).cloned() {
+                    this.detail_panel.update(cx, |p, cx| { p.set_deployment(d); cx.notify(); });
+                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
+                    }
+                }
             },
         )
         .detach();
         cx.subscribe_in(
             &service_panel,
             window,
-            |this, _, ev: &ResourceSelected, _w, _cx| {
+            |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Service", &ev.namespace, &ev.name);
+                let name = ev.name.clone(); let ns = ev.namespace.clone();
+                if let Some(s) = this.all_services.iter().find(|s| s.name == name && s.namespace == ns).cloned() {
+                    this.detail_panel.update(cx, |p, cx| { p.set_service(s); cx.notify(); });
+                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
+                    }
+                }
             },
         )
         .detach();
         cx.subscribe_in(
             &configmap_panel,
             window,
-            |this, _, ev: &ResourceSelected, _w, _cx| {
+            |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("ConfigMap", &ev.namespace, &ev.name);
+                let name = ev.name.clone(); let ns = ev.namespace.clone();
+                if let Some(c) = this.all_configmaps.iter().find(|c| c.name == name && c.namespace == ns).cloned() {
+                    this.detail_panel.update(cx, |p, cx| { p.set_configmap(c); cx.notify(); });
+                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
+                    }
+                }
             },
         )
         .detach();
         cx.subscribe_in(
             &node_panel,
             window,
-            |this, _, ev: &ResourceSelected, _w, _cx| {
+            |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Node", "", &ev.name);
+                let name = ev.name.clone();
+                if let Some(n) = this.all_nodes.iter().find(|n| n.name == name).cloned() {
+                    this.detail_panel.update(cx, |p, cx| { p.set_node(n); cx.notify(); });
+                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
+                    }
+                }
             },
         )
         .detach();
@@ -356,7 +385,7 @@ impl Workspace {
             service_panel,
             configmap_panel,
             node_panel,
-            pod_detail_panel,
+            detail_panel,
             yaml_panel,
             log_panel,
             palette,
@@ -364,6 +393,7 @@ impl Workspace {
             all_deployments: Vec::new(),
             all_services: Vec::new(),
             all_configmaps: Vec::new(),
+            all_nodes: Vec::new(),
             contexts: contexts.clone(),
             namespaces: Vec::new(),
             active_namespace: SharedString::from("All"),
@@ -473,6 +503,7 @@ impl Workspace {
             }
             KubeEvent::NodeList(items) => {
                 let count = items.len();
+                self.all_nodes = items.clone();
                 self.node_panel.update(cx, |p, cx| p.set_items(items, cx));
                 self.health_panel.update(cx, |p, _| p.resource_counts.nodes = count);
                 self.health_panel.update(cx, |_, cx| cx.notify());
@@ -484,8 +515,8 @@ impl Workspace {
                 let pod_name = detail.summary.name.clone();
                 let namespace = detail.summary.namespace.clone();
 
-                self.pod_detail_panel.update(cx, |panel, cx| {
-                    panel.set_detail(detail);
+                self.detail_panel.update(cx, |panel, cx| {
+                    panel.set_pod(detail);
                     cx.notify();
                 });
                 // Pod detail + log viewer both live in the bottom dock.
@@ -608,10 +639,11 @@ impl Workspace {
         self.service_panel.update(cx, |p, cx| p.set_items(vec![], cx));
         self.configmap_panel.update(cx, |p, cx| p.set_items(vec![], cx));
         self.node_panel.update(cx, |p, cx| p.set_items(vec![], cx));
-        self.pod_detail_panel.update(cx, |panel, cx| {
+        self.detail_panel.update(cx, |panel, cx| {
             panel.clear_detail();
             cx.notify();
         });
+        self.all_nodes.clear();
         self.yaml_panel.update(cx, |panel, _| panel.clear());
         // Stop log stream and clear log panel.
         self.log_abort.store(true, Ordering::SeqCst);
