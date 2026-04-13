@@ -948,4 +948,10 @@ fn render_status_bar(
         .child(Label::new(format!("◐ {pending}")).text_sm().text_color(STATUS_PENDING))
         .child(Label::new(format!("✖ {failed}")).text_sm().text_color(STATUS_FAILED))
         .child(Label::new(format!("{total} pods")).text_sm().text_color(TEXT_MUTED))
+        .child(Label::new("│").text_sm().text_color(TEXT_MUTED))
+        .child(
+            Label::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                .text_sm()
+                .text_color(TEXT_MUTED),
+        )
 }
