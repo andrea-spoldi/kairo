@@ -11,5 +11,6 @@ actions!(
         ToggleGrouping,
         OpenCommandPalette,
         CloseCommandPalette,
+        OpenSettings,
     ]
 );

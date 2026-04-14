@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/kairo-config",
     "crates/kairo-core",
     "crates/kairo-ui",
 ]

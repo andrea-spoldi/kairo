@@ -8,4 +8,5 @@ pub mod pod_detail;
 pub mod pod_list;
 pub mod resource_list;
 pub mod search_bar;
+pub mod settings_panel;
 pub mod yaml_viewer;

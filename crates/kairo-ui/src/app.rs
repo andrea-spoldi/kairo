@@ -24,8 +24,10 @@ use tracing::{error, info};
 
 use kairo_core::logs::LogStream;
 
+use kairo_config::KairoConfig;
+
 use crate::{
-    actions::OpenCommandPalette,
+    actions::{OpenCommandPalette, OpenSettings},
     components::{
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
         command_palette::{CommandPalette, PaletteAction},
@@ -37,11 +39,12 @@ use crate::{
             ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ResourceSelected,
             ServiceListPanel,
         },
+        settings_panel::{SettingsPanel, SettingsSaved},
         yaml_viewer::{yaml_title, YamlViewerPanel},
     },
     kube_runtime,
     theme::{
-        BORDER, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE,
+        BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE,
         TEXT_MUTED, TEXT_SECONDARY,
     },
 };
@@ -91,6 +94,9 @@ pub struct Workspace {
     yaml_panel: Entity<YamlViewerPanel>,
     log_panel: Entity<LogViewerPanel>,
     palette: Entity<CommandPalette>,
+    settings_panel: Entity<SettingsPanel>,
+    /// Current application config (updated on every save).
+    config: KairoConfig,
     /// Full unfiltered pod list from the watcher.
     all_pods: Vec<PodSummary>,
     /// Full unfiltered lists for namespaced resources.
@@ -324,6 +330,10 @@ impl Workspace {
         )
         .detach();
 
+        // ── Build settings panel ──────────────────────────────────────────────
+        let config = KairoConfig::load().unwrap_or_default();
+        let settings_panel = cx.new(|cx| SettingsPanel::new(window, cx));
+
         // ── Build command palette ─────────────────────────────────────────────
         let palette = cx.new(|cx| CommandPalette::new(window, cx));
 
@@ -350,6 +360,16 @@ impl Workspace {
                         panel.set_active_namespace(ns_val, cx);
                     });
                 }
+            },
+        )
+        .detach();
+
+        // ── Subscribe to settings saved ───────────────────────────────────────
+        cx.subscribe_in(
+            &settings_panel,
+            window,
+            |this, _, event: &SettingsSaved, _window, _cx| {
+                this.config = event.0.clone();
             },
         )
         .detach();
@@ -389,6 +409,8 @@ impl Workspace {
             yaml_panel,
             log_panel,
             palette,
+            settings_panel,
+            config,
             all_pods: Vec::new(),
             all_deployments: Vec::new(),
             all_services: Vec::new(),
@@ -914,6 +936,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenCommandPalette, window, cx| {
                 this.open_palette(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                this.settings_panel.update(cx, |panel, cx| panel.show(window, cx));
+            }))
             .child(
                 TitleBar::new()
                     .child(
@@ -940,6 +965,24 @@ impl Render for Workspace {
                                 Select::new(&self.ns_select)
                                     .placeholder("Namespace")
                                     .menu_width(gpui::rems(10.)),
+                            )
+                            // Gear icon — opens settings panel.
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .px_1()
+                                    .rounded(px(4.))
+                                    .hover(|s| s.bg(HOVER_BG))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, window, cx| {
+                                            cx.stop_propagation();
+                                            this.settings_panel.update(cx, |panel, cx| {
+                                                panel.show(window, cx);
+                                            });
+                                        }),
+                                    )
+                                    .child(Label::new("⚙").text_sm().text_color(TEXT_MUTED)),
                             ),
                     ),
             )
@@ -951,6 +994,10 @@ impl Render for Workspace {
             // Command palette overlay — rendered last so it sits on top.
             .when(self.palette.read(cx).is_visible(), |d: Div| {
                 d.child(self.palette.clone())
+            })
+            // Settings panel overlay — above command palette.
+            .when(self.settings_panel.read(cx).is_visible(), |d: Div| {
+                d.child(self.settings_panel.clone())
             })
     }
 }

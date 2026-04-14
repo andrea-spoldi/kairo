@@ -3378,6 +3378,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kairo-config"
+version = "0.5.0"
+dependencies = [
+ "dirs 5.0.1",
+ "serde",
+ "thiserror 1.0.69",
+ "toml 0.8.23",
+ "tracing",
+]
+
+[[package]]
 name = "kairo-core"
 version = "0.1.0"
 dependencies = [
@@ -3404,6 +3415,7 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "kairo-config",
  "kairo-core",
  "tokio",
  "tracing",

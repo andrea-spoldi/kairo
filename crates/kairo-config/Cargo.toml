@@ -1,0 +1,16 @@
+[package]
+name = "kairo-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Settings persistence for Kairo"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+serde     = { version = "1", features = ["derive"] }
+toml      = "0.8"
+dirs      = "5"
+thiserror = "1"
+tracing   = "0.1"

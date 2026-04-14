@@ -45,6 +45,7 @@ gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
+kairo-config = { path = "../kairo-config" }
 kairo-core = { path = "../kairo-core" }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

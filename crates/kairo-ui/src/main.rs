@@ -11,7 +11,7 @@ use gpui_component_assets::Assets;
 
 use actions::{
     CloseCommandPalette, ConfirmSelection, FocusSearch, NavigateDown, NavigateUp,
-    OpenCommandPalette, ToggleGrouping,
+    OpenCommandPalette, OpenSettings, ToggleGrouping,
 };
 
 fn main() {
@@ -38,8 +38,10 @@ fn main() {
 
             // Global shortcuts (no context — fire anywhere).
             cx.bind_keys([
-                KeyBinding::new("cmd-k",  OpenCommandPalette, None),
-                KeyBinding::new("ctrl-k", OpenCommandPalette, None),
+                KeyBinding::new("cmd-k",     OpenCommandPalette, None),
+                KeyBinding::new("ctrl-k",    OpenCommandPalette, None),
+                KeyBinding::new("cmd-,",     OpenSettings,       None),
+                KeyBinding::new("ctrl-,",    OpenSettings,       None),
             ]);
 
             // Pod list navigation (fires only when PodList key context is focused).
