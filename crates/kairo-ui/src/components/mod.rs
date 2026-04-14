@@ -1,3 +1,4 @@
+pub mod ai_panel;
 pub mod cluster_health;
 pub mod command_palette;
 pub mod context_switcher;

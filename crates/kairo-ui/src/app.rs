@@ -28,7 +28,9 @@ use kairo_config::KairoConfig;
 
 use crate::{
     actions::{OpenCommandPalette, OpenSettings},
+    ai_client,
     components::{
+        ai_panel::{AiPanel, AiSendMessage},
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
         command_palette::{CommandPalette, PaletteAction},
         event_feed::EventFeedPanel,
@@ -50,7 +52,7 @@ use crate::{
 };
 
 const DOCK_ID: &str = "kairo-dock";
-const DOCK_VERSION: usize = 4;
+const DOCK_VERSION: usize = 5;
 const POLL_INTERVAL_MS: u64 = 100;
 
 // ── Event queue shared between the tokio kube tasks and the GPUI poll loop ──
@@ -72,6 +74,10 @@ enum KubeEvent {
     LogError(String),
     WarningEvent(ClusterEvent),
     Error(String),
+    /// Incremental AI token from the streaming response.
+    AiToken(String),
+    AiDone,
+    AiError(String),
 }
 
 type EventQueue = Arc<Mutex<VecDeque<KubeEvent>>>;
@@ -95,6 +101,7 @@ pub struct Workspace {
     log_panel: Entity<LogViewerPanel>,
     palette: Entity<CommandPalette>,
     settings_panel: Entity<SettingsPanel>,
+    ai_panel: Entity<AiPanel>,
     /// Current application config (updated on every save).
     config: KairoConfig,
     /// Full unfiltered pod list from the watcher.
@@ -176,6 +183,7 @@ impl Workspace {
         let detail_panel = cx.new(|cx| DetailPanel::new(cx));
         let yaml_panel = cx.new(|cx| YamlViewerPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
+        let ai_panel = cx.new(|cx| AiPanel::new(window, cx));
 
         let left_panel = DockItem::tab(health_panel.clone(), &weak_dock, window, cx);
         // Center dock: Pods | Deployments | Services | ConfigMaps | Nodes | Events
@@ -205,10 +213,14 @@ impl Workspace {
             cx,
         );
 
+        // Right dock: AI Agent panel (hidden by default; opens on first use).
+        let right = DockItem::tab(ai_panel.clone(), &weak_dock, window, cx);
+
         dock_area.update(cx, |dock, cx| {
             dock.set_left_dock(left_panel, Some(px(220.)), true, window, cx);
             dock.set_center(center, window, cx);
             dock.set_bottom_dock(bottom, Some(px(280.)), false, window, cx);
+            dock.set_right_dock(right, Some(px(360.)), false, window, cx);
         });
 
         let events: EventQueue = Arc::new(Mutex::new(VecDeque::new()));
@@ -275,6 +287,8 @@ impl Workspace {
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Deployment", &ev.namespace, &ev.name);
                 let name = ev.name.clone(); let ns = ev.namespace.clone();
+                let ctx = format!("Deployment {ns}/{name}");
+                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
                 if let Some(d) = this.all_deployments.iter().find(|d| d.name == name && d.namespace == ns).cloned() {
                     this.detail_panel.update(cx, |p, cx| { p.set_deployment(d); cx.notify(); });
                     if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
@@ -290,6 +304,8 @@ impl Workspace {
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Service", &ev.namespace, &ev.name);
                 let name = ev.name.clone(); let ns = ev.namespace.clone();
+                let ctx = format!("Service {ns}/{name}");
+                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
                 if let Some(s) = this.all_services.iter().find(|s| s.name == name && s.namespace == ns).cloned() {
                     this.detail_panel.update(cx, |p, cx| { p.set_service(s); cx.notify(); });
                     if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
@@ -305,6 +321,8 @@ impl Workspace {
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("ConfigMap", &ev.namespace, &ev.name);
                 let name = ev.name.clone(); let ns = ev.namespace.clone();
+                let ctx = format!("ConfigMap {ns}/{name}");
+                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
                 if let Some(c) = this.all_configmaps.iter().find(|c| c.name == name && c.namespace == ns).cloned() {
                     this.detail_panel.update(cx, |p, cx| { p.set_configmap(c); cx.notify(); });
                     if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
@@ -320,6 +338,8 @@ impl Workspace {
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Node", "", &ev.name);
                 let name = ev.name.clone();
+                let ctx = format!("Node {name}");
+                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
                 if let Some(n) = this.all_nodes.iter().find(|n| n.name == name).cloned() {
                     this.detail_panel.update(cx, |p, cx| { p.set_node(n); cx.notify(); });
                     if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
@@ -374,6 +394,16 @@ impl Workspace {
         )
         .detach();
 
+        // ── Subscribe to AI send message ──────────────────────────────────────
+        cx.subscribe_in(
+            &ai_panel,
+            window,
+            |this, _, event: &AiSendMessage, window, cx| {
+                this.handle_ai_send(event.0.clone(), window, cx);
+            },
+        )
+        .detach();
+
         // ── Subscribe to container tab selection in log panel ─────────────────
         cx.subscribe_in(
             &log_panel,
@@ -410,6 +440,7 @@ impl Workspace {
             log_panel,
             palette,
             settings_panel,
+            ai_panel,
             config,
             all_pods: Vec::new(),
             all_deployments: Vec::new(),
@@ -595,6 +626,16 @@ impl Workspace {
             }
             KubeEvent::Error(msg) => {
                 error!("kube error: {msg}");
+            }
+            KubeEvent::AiToken(token) => {
+                self.ai_panel.update(cx, |panel, cx| panel.push_token(&token, cx));
+            }
+            KubeEvent::AiDone => {
+                self.ai_panel.update(cx, |panel, cx| panel.finish_streaming(cx));
+            }
+            KubeEvent::AiError(msg) => {
+                error!("ai error: {msg}");
+                self.ai_panel.update(cx, |panel, cx| panel.set_error(&msg, cx));
             }
         }
     }
@@ -793,8 +834,11 @@ impl Workspace {
     }
 
     /// Fetch pod detail + events asynchronously when a pod row is clicked.
-    fn on_pod_selected(&mut self, name: &str, namespace: &str, _cx: &mut Context<Self>) {
+    fn on_pod_selected(&mut self, name: &str, namespace: &str, cx: &mut Context<Self>) {
         self.fetch_resource_yaml("Pod", namespace, name);
+        // Update AI context for this resource.
+        let ctx = format!("Pod {namespace}/{name}");
+        self.ai_panel.update(cx, |p, _| p.set_context(ctx));
         let Some(client) = self.kube_client.clone() else { return };
         let events = self.events.clone();
         let name = name.to_string();
@@ -857,6 +901,84 @@ impl Workspace {
             p.set_namespaces(&namespaces, cx);
             p.show(window, cx);
         });
+    }
+
+    // ── AI integration ─────────────────────────────────────────────────────────
+
+    /// Called when the user submits a message in the AI panel.
+    fn handle_ai_send(&mut self, user_msg: String, window: &mut Window, cx: &mut Context<Self>) {
+        // Push the user message to panel immediately (clears input, shows it).
+        self.ai_panel
+            .update(cx, |p, cx| p.push_user_message(&user_msg, window, cx));
+
+        // Build full message history (the user message is now included).
+        let messages = self.ai_panel.read(cx).build_api_messages();
+        let config = self.config.clone();
+        let system_prompt = self.build_system_prompt(cx);
+        let events = self.events.clone();
+
+        kube_runtime::handle().spawn(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<ai_client::StreamChunk>(128);
+            let events_inner = events.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) =
+                    ai_client::stream_completion(config, system_prompt, messages, tx).await
+                {
+                    events_inner
+                        .lock()
+                        .unwrap()
+                        .push_back(KubeEvent::AiError(e.to_string()));
+                }
+            });
+
+            while let Some(chunk) = rx.recv().await {
+                match chunk {
+                    ai_client::StreamChunk::Token(t) => {
+                        events.lock().unwrap().push_back(KubeEvent::AiToken(t));
+                    }
+                    ai_client::StreamChunk::Done => {
+                        events.lock().unwrap().push_back(KubeEvent::AiDone);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Open the right dock if it's closed.
+        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
+            self.dock_area.update(cx, |dock, cx| {
+                dock.toggle_dock(DockPlacement::Right, window, cx);
+            });
+        }
+    }
+
+    /// Build a system prompt that includes current cluster context.
+    fn build_system_prompt(&self, cx: &App) -> String {
+        let cluster = self
+            .active_context
+            .as_ref()
+            .map(|s| s.as_ref())
+            .unwrap_or("unknown");
+        let ns = self.active_namespace.as_ref();
+        let total = self.all_pods.len();
+        let running = self.all_pods.iter().filter(|p| p.status == "Running").count();
+        let resource_ctx = self.ai_panel.read(cx).context_text.clone();
+
+        let mut prompt = format!(
+            "You are a Kubernetes expert assistant integrated into Kairo, a native Kubernetes IDE.\n\
+             Be concise, technical, and accurate. Format YAML examples in markdown code blocks.\n\n\
+             Current cluster context:\n\
+             - Cluster: {cluster}\n\
+             - Namespace filter: {ns}\n\
+             - Pods: {running}/{total} running"
+        );
+
+        if let Some(ctx) = resource_ctx {
+            prompt.push_str(&format!("\n- Selected resource: {ctx}"));
+        }
+
+        prompt
     }
 
     /// Push the namespace-filtered pod list to the panel (which re-applies search filters).
