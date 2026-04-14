@@ -38,20 +38,8 @@ impl DetailPanel {
         Self { focus_handle: cx.focus_handle(), detail: None }
     }
 
-    pub fn set_pod(&mut self, detail: PodDetail) {
-        self.detail = Some(ResourceDetail::Pod(detail));
-    }
-    pub fn set_deployment(&mut self, d: DeploymentSummary) {
-        self.detail = Some(ResourceDetail::Deployment(d));
-    }
-    pub fn set_service(&mut self, s: ServiceSummary) {
-        self.detail = Some(ResourceDetail::Service(s));
-    }
-    pub fn set_configmap(&mut self, c: ConfigMapSummary) {
-        self.detail = Some(ResourceDetail::ConfigMap(c));
-    }
-    pub fn set_node(&mut self, n: NodeSummary) {
-        self.detail = Some(ResourceDetail::Node(n));
+    pub fn set_detail(&mut self, detail: ResourceDetail) {
+        self.detail = Some(detail);
     }
     pub fn clear_detail(&mut self) {
         self.detail = None;
@@ -73,7 +61,7 @@ impl Panel for DetailPanel {
 
 impl Render for DetailPanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(detail) = self.detail.clone() else {
+        let Some(detail) = self.detail.as_ref() else {
             return div()
                 .size_full()
                 .flex()
@@ -124,6 +112,24 @@ fn kv_row(key: &str, value: impl Into<SharedString>) -> impl IntoElement {
         .child(Label::new(value.into()).text_sm().text_color(TEXT_PRIMARY))
 }
 
+fn kv_row_colored(key: &str, value: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
+    h_flex()
+        .gap_3()
+        .py(px(1.))
+        .child(
+            div()
+                .w(px(130.))
+                .flex_shrink_0()
+                .child(Label::new(key.to_string()).text_sm().text_color(TEXT_MUTED)),
+        )
+        .child(
+            Label::new(value.into())
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(color),
+        )
+}
+
 fn resource_bar(label: &str, value: i64, total: i64, detail_text: impl Into<SharedString>) -> impl IntoElement {
     let ratio = if total > 0 { (value as f32 / total as f32).clamp(0., 1.) } else { 0. };
     let bar_color = if ratio > 0.85 {
@@ -165,7 +171,21 @@ fn kind_badge(kind: &str) -> impl IntoElement {
         .child(Label::new(kind.to_string()).text_xs().text_color(TEXT_SECONDARY))
 }
 
-fn name_header(name: &str, kind: &str, namespace: &str, age: &str) -> impl IntoElement {
+fn status_dot_label(status: &str) -> impl IntoElement {
+    let color = status_color(status);
+    let symbol = status_symbol(status);
+    h_flex()
+        .gap(px(5.))
+        .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
+        .child(
+            Label::new(format!("{symbol} {status}"))
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(color),
+        )
+}
+
+fn name_header(name: &str, kind: &str, namespace: &str, age: &str) -> Div {
     div()
         .flex()
         .flex_col()
@@ -191,53 +211,18 @@ fn name_header(name: &str, kind: &str, namespace: &str, age: &str) -> impl IntoE
 
 fn render_pod(detail: &PodDetail) -> AnyElement {
     let s = &detail.summary;
-    let color = status_color(&s.status);
-    let symbol = status_symbol(&s.status);
 
     div()
         .flex()
         .flex_col()
         .gap_4()
-        // Header
         .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div().child(
-                        Label::new(s.name.clone())
-                            .text_size(rems(1.1))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(TEXT_PRIMARY),
-                    ),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(kind_badge("Pod"))
-                        .child(
-                            h_flex()
-                                .gap(px(5.))
-                                .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
-                                .child(
-                                    Label::new(format!("{symbol} {}", s.status))
-                                        .text_sm()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(color),
-                                ),
-                        ),
-                )
+            name_header(&s.name, "Pod", &s.namespace, &s.age)
+                .child(status_dot_label(&s.status))
                 .child(
                     h_flex()
                         .gap_3()
-                        .child(Label::new(s.namespace.clone()).text_sm().text_color(TEXT_SECONDARY))
-                        .child(Label::new(format!("age: {}", s.age)).text_sm().text_color(TEXT_MUTED))
-                        .child(Label::new(format!("node: {}", s.node)).text_sm().text_color(TEXT_SECONDARY)),
-                )
-                .child(
-                    h_flex()
-                        .gap_3()
+                        .child(Label::new(format!("node: {}", s.node)).text_sm().text_color(TEXT_SECONDARY))
                         .child(Label::new(format!("ready: {}", s.ready)).text_sm().text_color(TEXT_SECONDARY))
                         .child(Label::new(format!("restarts: {}", s.restarts)).text_sm().text_color(TEXT_SECONDARY)),
                 ),
@@ -404,23 +389,7 @@ fn render_service(s: &ServiceSummary) -> AnyElement {
                 .flex_col()
                 .gap_1()
                 .child(section_title("Network"))
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .py(px(1.))
-                        .child(
-                            div()
-                                .w(px(130.))
-                                .flex_shrink_0()
-                                .child(Label::new("Type").text_sm().text_color(TEXT_MUTED)),
-                        )
-                        .child(
-                            Label::new(s.type_.clone())
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(type_color),
-                        ),
-                )
+                .child(kv_row_colored("Type", s.type_.clone(), type_color))
                 .child(kv_row("Cluster IP", s.cluster_ip.clone()))
                 .child(kv_row("External IP", s.external_ip.clone()))
                 .child(kv_row("Ports", s.ports.clone())),
@@ -455,8 +424,6 @@ fn render_configmap(c: &ConfigMapSummary) -> AnyElement {
 // ── Node renderer ─────────────────────────────────────────────────────────────
 
 fn render_node(n: &NodeSummary) -> AnyElement {
-    let color = status_color(&n.status);
-    let symbol = status_symbol(&n.status);
     let cpu_detail = format!(
         "{} / {}",
         fmt_cpu(n.cpu_allocatable_milli),
@@ -472,44 +439,10 @@ fn render_node(n: &NodeSummary) -> AnyElement {
         .flex()
         .flex_col()
         .gap_4()
-        // Header
         .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div().child(
-                        Label::new(n.name.clone())
-                            .text_size(rems(1.1))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(TEXT_PRIMARY),
-                    ),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(kind_badge("Node"))
-                        .child(
-                            h_flex()
-                                .gap(px(5.))
-                                .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
-                                .child(
-                                    Label::new(format!("{symbol} {}", n.status))
-                                        .text_sm()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(color),
-                                ),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .child(Label::new(format!("roles: {}", n.roles)).text_sm().text_color(TEXT_SECONDARY))
-                        .child(Label::new(format!("age: {}", n.age)).text_sm().text_color(TEXT_MUTED)),
-                ),
+            name_header(&n.name, "Node", &n.roles, &n.age)
+                .child(status_dot_label(&n.status)),
         )
-        // System info
         .child(
             div()
                 .flex()
@@ -520,7 +453,6 @@ fn render_node(n: &NodeSummary) -> AnyElement {
                 .child(kv_row("OS", n.os_image.clone()))
                 .child(kv_row("Pod capacity", n.pod_capacity.to_string())),
         )
-        // Resource allocation
         .child(
             div()
                 .flex()
