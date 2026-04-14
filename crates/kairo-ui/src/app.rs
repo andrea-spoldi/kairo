@@ -286,19 +286,10 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Deployment", &ev.namespace, &ev.name);
-<<<<<<< HEAD
-                let name = ev.name.clone(); let ns = ev.namespace.clone();
-                let ctx = format!("Deployment {ns}/{name}");
+                let ctx = format!("Deployment {}/{}", ev.namespace, ev.name);
                 this.ai_panel.update(cx, |p, _| p.set_context(ctx));
-                if let Some(d) = this.all_deployments.iter().find(|d| d.name == name && d.namespace == ns).cloned() {
-                    this.detail_panel.update(cx, |p, cx| { p.set_deployment(d); cx.notify(); });
-                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
-                    }
-=======
                 if let Some(d) = this.all_deployments.iter().find(|d| d.name == ev.name && d.namespace == ev.namespace).cloned() {
                     this.show_detail(ResourceDetail::Deployment(d), window, cx);
->>>>>>> main
                 }
             },
         )
@@ -308,19 +299,10 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Service", &ev.namespace, &ev.name);
-<<<<<<< HEAD
-                let name = ev.name.clone(); let ns = ev.namespace.clone();
-                let ctx = format!("Service {ns}/{name}");
+                let ctx = format!("Service {}/{}", ev.namespace, ev.name);
                 this.ai_panel.update(cx, |p, _| p.set_context(ctx));
-                if let Some(s) = this.all_services.iter().find(|s| s.name == name && s.namespace == ns).cloned() {
-                    this.detail_panel.update(cx, |p, cx| { p.set_service(s); cx.notify(); });
-                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
-                    }
-=======
                 if let Some(s) = this.all_services.iter().find(|s| s.name == ev.name && s.namespace == ev.namespace).cloned() {
                     this.show_detail(ResourceDetail::Service(s), window, cx);
->>>>>>> main
                 }
             },
         )
@@ -330,19 +312,10 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("ConfigMap", &ev.namespace, &ev.name);
-<<<<<<< HEAD
-                let name = ev.name.clone(); let ns = ev.namespace.clone();
-                let ctx = format!("ConfigMap {ns}/{name}");
+                let ctx = format!("ConfigMap {}/{}", ev.namespace, ev.name);
                 this.ai_panel.update(cx, |p, _| p.set_context(ctx));
-                if let Some(c) = this.all_configmaps.iter().find(|c| c.name == name && c.namespace == ns).cloned() {
-                    this.detail_panel.update(cx, |p, cx| { p.set_configmap(c); cx.notify(); });
-                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
-                    }
-=======
                 if let Some(c) = this.all_configmaps.iter().find(|c| c.name == ev.name && c.namespace == ev.namespace).cloned() {
                     this.show_detail(ResourceDetail::ConfigMap(c), window, cx);
->>>>>>> main
                 }
             },
         )
@@ -352,19 +325,10 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Node", "", &ev.name);
-<<<<<<< HEAD
-                let name = ev.name.clone();
-                let ctx = format!("Node {name}");
+                let ctx = format!("Node {}", ev.name);
                 this.ai_panel.update(cx, |p, _| p.set_context(ctx));
-                if let Some(n) = this.all_nodes.iter().find(|n| n.name == name).cloned() {
-                    this.detail_panel.update(cx, |p, cx| { p.set_node(n); cx.notify(); });
-                    if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                        this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
-                    }
-=======
                 if let Some(n) = this.all_nodes.iter().find(|n| n.name == ev.name).cloned() {
                     this.show_detail(ResourceDetail::Node(n), window, cx);
->>>>>>> main
                 }
             },
         )
@@ -910,7 +874,14 @@ impl Workspace {
         });
     }
 
-<<<<<<< HEAD
+    fn ensure_bottom_dock_open(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+            self.dock_area.update(cx, |dock, cx| {
+                dock.toggle_dock(DockPlacement::Bottom, window, cx);
+            });
+        }
+    }
+
     // ── AI integration ─────────────────────────────────────────────────────────
 
     /// Called when the user submits a message in the AI panel.
@@ -957,17 +928,15 @@ impl Workspace {
         if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
             self.dock_area.update(cx, |dock, cx| {
                 dock.toggle_dock(DockPlacement::Right, window, cx);
-=======
-    fn ensure_bottom_dock_open(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-            self.dock_area.update(cx, |dock, cx| {
-                dock.toggle_dock(DockPlacement::Bottom, window, cx);
->>>>>>> main
             });
         }
     }
 
-<<<<<<< HEAD
+    fn show_detail(&mut self, detail: ResourceDetail, window: &mut Window, cx: &mut Context<Self>) {
+        self.detail_panel.update(cx, |p, cx| { p.set_detail(detail); cx.notify(); });
+        self.ensure_bottom_dock_open(window, cx);
+    }
+
     /// Build a system prompt that includes current cluster context.
     fn build_system_prompt(&self, cx: &App) -> String {
         let cluster = self
@@ -994,11 +963,6 @@ impl Workspace {
         }
 
         prompt
-=======
-    fn show_detail(&mut self, detail: ResourceDetail, window: &mut Window, cx: &mut Context<Self>) {
-        self.detail_panel.update(cx, |p, cx| { p.set_detail(detail); cx.notify(); });
-        self.ensure_bottom_dock_open(window, cx);
->>>>>>> main
     }
 
     /// Push the namespace-filtered pod list to the panel (which re-applies search filters).
