@@ -24,9 +24,13 @@ use tracing::{error, info};
 
 use kairo_core::logs::LogStream;
 
+use kairo_config::KairoConfig;
+
 use crate::{
-    actions::OpenCommandPalette,
+    actions::{OpenCommandPalette, OpenSettings},
+    ai_client,
     components::{
+        ai_panel::{AiPanel, AiSendMessage},
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
         command_palette::{CommandPalette, PaletteAction},
         event_feed::EventFeedPanel,
@@ -37,17 +41,18 @@ use crate::{
             ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ResourceSelected,
             ServiceListPanel,
         },
+        settings_panel::{SettingsPanel, SettingsSaved},
         yaml_viewer::{yaml_title, YamlViewerPanel},
     },
     kube_runtime,
     theme::{
-        BORDER, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE,
+        BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE,
         TEXT_MUTED, TEXT_SECONDARY,
     },
 };
 
 const DOCK_ID: &str = "kairo-dock";
-const DOCK_VERSION: usize = 4;
+const DOCK_VERSION: usize = 5;
 const POLL_INTERVAL_MS: u64 = 100;
 
 // ── Event queue shared between the tokio kube tasks and the GPUI poll loop ──
@@ -69,6 +74,10 @@ enum KubeEvent {
     LogError(String),
     WarningEvent(ClusterEvent),
     Error(String),
+    /// Incremental AI token from the streaming response.
+    AiToken(String),
+    AiDone,
+    AiError(String),
 }
 
 type EventQueue = Arc<Mutex<VecDeque<KubeEvent>>>;
@@ -91,6 +100,10 @@ pub struct Workspace {
     yaml_panel: Entity<YamlViewerPanel>,
     log_panel: Entity<LogViewerPanel>,
     palette: Entity<CommandPalette>,
+    settings_panel: Entity<SettingsPanel>,
+    ai_panel: Entity<AiPanel>,
+    /// Current application config (updated on every save).
+    config: KairoConfig,
     /// Full unfiltered pod list from the watcher.
     all_pods: Vec<PodSummary>,
     /// Full unfiltered lists for namespaced resources.
@@ -170,6 +183,7 @@ impl Workspace {
         let detail_panel = cx.new(|cx| DetailPanel::new(cx));
         let yaml_panel = cx.new(|cx| YamlViewerPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
+        let ai_panel = cx.new(|cx| AiPanel::new(window, cx));
 
         let left_panel = DockItem::tab(health_panel.clone(), &weak_dock, window, cx);
         // Center dock: Pods | Deployments | Services | ConfigMaps | Nodes | Events
@@ -199,10 +213,14 @@ impl Workspace {
             cx,
         );
 
+        // Right dock: AI Agent panel (hidden by default; opens on first use).
+        let right = DockItem::tab(ai_panel.clone(), &weak_dock, window, cx);
+
         dock_area.update(cx, |dock, cx| {
             dock.set_left_dock(left_panel, Some(px(220.)), true, window, cx);
             dock.set_center(center, window, cx);
             dock.set_bottom_dock(bottom, Some(px(280.)), false, window, cx);
+            dock.set_right_dock(right, Some(px(360.)), false, window, cx);
         });
 
         let events: EventQueue = Arc::new(Mutex::new(VecDeque::new()));
@@ -268,6 +286,8 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Deployment", &ev.namespace, &ev.name);
+                let ctx = format!("Deployment {}/{}", ev.namespace, ev.name);
+                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
                 if let Some(d) = this.all_deployments.iter().find(|d| d.name == ev.name && d.namespace == ev.namespace).cloned() {
                     this.show_detail(ResourceDetail::Deployment(d), window, cx);
                 }
@@ -279,6 +299,8 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Service", &ev.namespace, &ev.name);
+                let ctx = format!("Service {}/{}", ev.namespace, ev.name);
+                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
                 if let Some(s) = this.all_services.iter().find(|s| s.name == ev.name && s.namespace == ev.namespace).cloned() {
                     this.show_detail(ResourceDetail::Service(s), window, cx);
                 }
@@ -290,6 +312,8 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("ConfigMap", &ev.namespace, &ev.name);
+                let ctx = format!("ConfigMap {}/{}", ev.namespace, ev.name);
+                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
                 if let Some(c) = this.all_configmaps.iter().find(|c| c.name == ev.name && c.namespace == ev.namespace).cloned() {
                     this.show_detail(ResourceDetail::ConfigMap(c), window, cx);
                 }
@@ -301,12 +325,18 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Node", "", &ev.name);
+                let ctx = format!("Node {}", ev.name);
+                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
                 if let Some(n) = this.all_nodes.iter().find(|n| n.name == ev.name).cloned() {
                     this.show_detail(ResourceDetail::Node(n), window, cx);
                 }
             },
         )
         .detach();
+
+        // ── Build settings panel ──────────────────────────────────────────────
+        let config = KairoConfig::load().unwrap_or_default();
+        let settings_panel = cx.new(|cx| SettingsPanel::new(window, cx));
 
         // ── Build command palette ─────────────────────────────────────────────
         let palette = cx.new(|cx| CommandPalette::new(window, cx));
@@ -334,6 +364,26 @@ impl Workspace {
                         panel.set_active_namespace(ns_val, cx);
                     });
                 }
+            },
+        )
+        .detach();
+
+        // ── Subscribe to settings saved ───────────────────────────────────────
+        cx.subscribe_in(
+            &settings_panel,
+            window,
+            |this, _, event: &SettingsSaved, _window, _cx| {
+                this.config = event.0.clone();
+            },
+        )
+        .detach();
+
+        // ── Subscribe to AI send message ──────────────────────────────────────
+        cx.subscribe_in(
+            &ai_panel,
+            window,
+            |this, _, event: &AiSendMessage, window, cx| {
+                this.handle_ai_send(event.0.clone(), window, cx);
             },
         )
         .detach();
@@ -373,6 +423,9 @@ impl Workspace {
             yaml_panel,
             log_panel,
             palette,
+            settings_panel,
+            ai_panel,
+            config,
             all_pods: Vec::new(),
             all_deployments: Vec::new(),
             all_services: Vec::new(),
@@ -544,6 +597,16 @@ impl Workspace {
             }
             KubeEvent::Error(msg) => {
                 error!("kube error: {msg}");
+            }
+            KubeEvent::AiToken(token) => {
+                self.ai_panel.update(cx, |panel, cx| panel.push_token(&token, cx));
+            }
+            KubeEvent::AiDone => {
+                self.ai_panel.update(cx, |panel, cx| panel.finish_streaming(cx));
+            }
+            KubeEvent::AiError(msg) => {
+                error!("ai error: {msg}");
+                self.ai_panel.update(cx, |panel, cx| panel.set_error(&msg, cx));
             }
         }
     }
@@ -742,8 +805,11 @@ impl Workspace {
     }
 
     /// Fetch pod detail + events asynchronously when a pod row is clicked.
-    fn on_pod_selected(&mut self, name: &str, namespace: &str, _cx: &mut Context<Self>) {
+    fn on_pod_selected(&mut self, name: &str, namespace: &str, cx: &mut Context<Self>) {
         self.fetch_resource_yaml("Pod", namespace, name);
+        // Update AI context for this resource.
+        let ctx = format!("Pod {namespace}/{name}");
+        self.ai_panel.update(cx, |p, _| p.set_context(ctx));
         let Some(client) = self.kube_client.clone() else { return };
         let events = self.events.clone();
         let name = name.to_string();
@@ -816,9 +882,87 @@ impl Workspace {
         }
     }
 
+    // ── AI integration ─────────────────────────────────────────────────────────
+
+    /// Called when the user submits a message in the AI panel.
+    fn handle_ai_send(&mut self, user_msg: String, window: &mut Window, cx: &mut Context<Self>) {
+        // Push the user message to panel immediately (clears input, shows it).
+        self.ai_panel
+            .update(cx, |p, cx| p.push_user_message(&user_msg, window, cx));
+
+        // Build full message history (the user message is now included).
+        let messages = self.ai_panel.read(cx).build_api_messages();
+        let config = self.config.clone();
+        let system_prompt = self.build_system_prompt(cx);
+        let events = self.events.clone();
+
+        kube_runtime::handle().spawn(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<ai_client::StreamChunk>(128);
+            let events_inner = events.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) =
+                    ai_client::stream_completion(config, system_prompt, messages, tx).await
+                {
+                    events_inner
+                        .lock()
+                        .unwrap()
+                        .push_back(KubeEvent::AiError(e.to_string()));
+                }
+            });
+
+            while let Some(chunk) = rx.recv().await {
+                match chunk {
+                    ai_client::StreamChunk::Token(t) => {
+                        events.lock().unwrap().push_back(KubeEvent::AiToken(t));
+                    }
+                    ai_client::StreamChunk::Done => {
+                        events.lock().unwrap().push_back(KubeEvent::AiDone);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Open the right dock if it's closed.
+        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
+            self.dock_area.update(cx, |dock, cx| {
+                dock.toggle_dock(DockPlacement::Right, window, cx);
+            });
+        }
+    }
+
     fn show_detail(&mut self, detail: ResourceDetail, window: &mut Window, cx: &mut Context<Self>) {
         self.detail_panel.update(cx, |p, cx| { p.set_detail(detail); cx.notify(); });
         self.ensure_bottom_dock_open(window, cx);
+    }
+
+    /// Build a system prompt that includes current cluster context.
+    fn build_system_prompt(&self, cx: &App) -> String {
+        let cluster = self
+            .active_context
+            .as_ref()
+            .map(|s| s.as_ref())
+            .unwrap_or("unknown");
+        let ns = self.active_namespace.as_ref();
+        let total = self.all_pods.len();
+        let running = self.all_pods.iter().filter(|p| p.status == "Running").count();
+        let resource_ctx = self.ai_panel.read(cx).context_text.clone();
+
+        let mut prompt = format!(
+            "You are a Kubernetes expert assistant integrated into Kairo, a native Kubernetes IDE.\n\
+             Be concise, technical, and accurate. Format YAML examples in markdown code blocks.\n\n\
+             Current cluster context:\n\
+             - Cluster: {cluster}\n\
+             - Namespace filter: {ns}\n\
+             - Pods: {running}/{total} running"
+        );
+
+        if let Some(ctx) = resource_ctx {
+            prompt.push_str(&format!("\n- Selected resource: {ctx}"));
+        }
+
+        prompt
     }
 
     /// Push the namespace-filtered pod list to the panel (which re-applies search filters).
@@ -898,6 +1042,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenCommandPalette, window, cx| {
                 this.open_palette(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                this.settings_panel.update(cx, |panel, cx| panel.show(window, cx));
+            }))
             .child(
                 TitleBar::new()
                     .child(
@@ -924,6 +1071,24 @@ impl Render for Workspace {
                                 Select::new(&self.ns_select)
                                     .placeholder("Namespace")
                                     .menu_width(gpui::rems(10.)),
+                            )
+                            // Gear icon — opens settings panel.
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .px_1()
+                                    .rounded(px(4.))
+                                    .hover(|s| s.bg(HOVER_BG))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, window, cx| {
+                                            cx.stop_propagation();
+                                            this.settings_panel.update(cx, |panel, cx| {
+                                                panel.show(window, cx);
+                                            });
+                                        }),
+                                    )
+                                    .child(Label::new("⚙").text_sm().text_color(TEXT_MUTED)),
                             ),
                     ),
             )
@@ -935,6 +1100,10 @@ impl Render for Workspace {
             // Command palette overlay — rendered last so it sits on top.
             .when(self.palette.read(cx).is_visible(), |d: Div| {
                 d.child(self.palette.clone())
+            })
+            // Settings panel overlay — above command palette.
+            .when(self.settings_panel.read(cx).is_visible(), |d: Div| {
+                d.child(self.settings_panel.clone())
             })
     }
 }
