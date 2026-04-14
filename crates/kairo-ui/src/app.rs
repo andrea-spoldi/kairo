@@ -35,7 +35,7 @@ use crate::{
         command_palette::{CommandPalette, PaletteAction},
         event_feed::EventFeedPanel,
         log_viewer::{ContainerSelected, LogViewerPanel},
-        pod_detail::DetailPanel,
+        pod_detail::{DetailPanel, ResourceDetail},
         pod_list::{PodListPanel, PodSelected},
         resource_list::{
             ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ResourceSelected,
@@ -286,6 +286,7 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Deployment", &ev.namespace, &ev.name);
+<<<<<<< HEAD
                 let name = ev.name.clone(); let ns = ev.namespace.clone();
                 let ctx = format!("Deployment {ns}/{name}");
                 this.ai_panel.update(cx, |p, _| p.set_context(ctx));
@@ -294,6 +295,10 @@ impl Workspace {
                     if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
                         this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
                     }
+=======
+                if let Some(d) = this.all_deployments.iter().find(|d| d.name == ev.name && d.namespace == ev.namespace).cloned() {
+                    this.show_detail(ResourceDetail::Deployment(d), window, cx);
+>>>>>>> main
                 }
             },
         )
@@ -303,6 +308,7 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Service", &ev.namespace, &ev.name);
+<<<<<<< HEAD
                 let name = ev.name.clone(); let ns = ev.namespace.clone();
                 let ctx = format!("Service {ns}/{name}");
                 this.ai_panel.update(cx, |p, _| p.set_context(ctx));
@@ -311,6 +317,10 @@ impl Workspace {
                     if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
                         this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
                     }
+=======
+                if let Some(s) = this.all_services.iter().find(|s| s.name == ev.name && s.namespace == ev.namespace).cloned() {
+                    this.show_detail(ResourceDetail::Service(s), window, cx);
+>>>>>>> main
                 }
             },
         )
@@ -320,6 +330,7 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("ConfigMap", &ev.namespace, &ev.name);
+<<<<<<< HEAD
                 let name = ev.name.clone(); let ns = ev.namespace.clone();
                 let ctx = format!("ConfigMap {ns}/{name}");
                 this.ai_panel.update(cx, |p, _| p.set_context(ctx));
@@ -328,6 +339,10 @@ impl Workspace {
                     if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
                         this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
                     }
+=======
+                if let Some(c) = this.all_configmaps.iter().find(|c| c.name == ev.name && c.namespace == ev.namespace).cloned() {
+                    this.show_detail(ResourceDetail::ConfigMap(c), window, cx);
+>>>>>>> main
                 }
             },
         )
@@ -337,6 +352,7 @@ impl Workspace {
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
                 this.fetch_resource_yaml("Node", "", &ev.name);
+<<<<<<< HEAD
                 let name = ev.name.clone();
                 let ctx = format!("Node {name}");
                 this.ai_panel.update(cx, |p, _| p.set_context(ctx));
@@ -345,6 +361,10 @@ impl Workspace {
                     if !this.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
                         this.dock_area.update(cx, |dock, cx| { dock.toggle_dock(DockPlacement::Bottom, window, cx); });
                     }
+=======
+                if let Some(n) = this.all_nodes.iter().find(|n| n.name == ev.name).cloned() {
+                    this.show_detail(ResourceDetail::Node(n), window, cx);
+>>>>>>> main
                 }
             },
         )
@@ -568,16 +588,7 @@ impl Workspace {
                 let pod_name = detail.summary.name.clone();
                 let namespace = detail.summary.namespace.clone();
 
-                self.detail_panel.update(cx, |panel, cx| {
-                    panel.set_pod(detail);
-                    cx.notify();
-                });
-                // Pod detail + log viewer both live in the bottom dock.
-                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                    self.dock_area.update(cx, |dock, cx| {
-                        dock.toggle_dock(DockPlacement::Bottom, window, cx);
-                    });
-                }
+                self.show_detail(ResourceDetail::Pod(detail), window, cx);
 
                 // Start log streaming for first container.
                 if let Some(first_container) = containers.first().cloned() {
@@ -599,11 +610,7 @@ impl Workspace {
                     panel.set_yaml(title, yaml);
                     cx.notify();
                 });
-                if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
-                    self.dock_area.update(cx, |dock, cx| {
-                        dock.toggle_dock(DockPlacement::Bottom, window, cx);
-                    });
-                }
+                self.ensure_bottom_dock_open(window, cx);
             }
             KubeEvent::ResourceYamlError(msg) => {
                 error!("yaml fetch error: {msg}");
@@ -903,6 +910,7 @@ impl Workspace {
         });
     }
 
+<<<<<<< HEAD
     // ── AI integration ─────────────────────────────────────────────────────────
 
     /// Called when the user submits a message in the AI panel.
@@ -949,10 +957,17 @@ impl Workspace {
         if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
             self.dock_area.update(cx, |dock, cx| {
                 dock.toggle_dock(DockPlacement::Right, window, cx);
+=======
+    fn ensure_bottom_dock_open(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+            self.dock_area.update(cx, |dock, cx| {
+                dock.toggle_dock(DockPlacement::Bottom, window, cx);
+>>>>>>> main
             });
         }
     }
 
+<<<<<<< HEAD
     /// Build a system prompt that includes current cluster context.
     fn build_system_prompt(&self, cx: &App) -> String {
         let cluster = self
@@ -979,6 +994,11 @@ impl Workspace {
         }
 
         prompt
+=======
+    fn show_detail(&mut self, detail: ResourceDetail, window: &mut Window, cx: &mut Context<Self>) {
+        self.detail_panel.update(cx, |p, cx| { p.set_detail(detail); cx.notify(); });
+        self.ensure_bottom_dock_open(window, cx);
+>>>>>>> main
     }
 
     /// Push the namespace-filtered pod list to the panel (which re-applies search filters).
