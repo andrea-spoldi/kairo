@@ -377,13 +377,7 @@ fn field_row(label: &'static str, input: &Entity<InputState>) -> impl IntoElemen
         .child(Input::new(input))
 }
 
-fn section_header(title: &'static str, is_active: bool, cx: &mut Context<SettingsPanel>) -> impl IntoElement {
-    let provider = match title {
-        "Anthropic" => ActiveProvider::Anthropic,
-        "OpenAI"    => ActiveProvider::OpenAi,
-        _           => ActiveProvider::Ollama,
-    };
-
+fn section_header(title: &'static str, provider: ActiveProvider, is_active: bool, cx: &mut Context<SettingsPanel>) -> impl IntoElement {
     h_flex()
         .gap(px(8.))
         .mb(px(4.))
@@ -419,7 +413,7 @@ fn render_anthropic_fields(panel: &SettingsPanel, cx: &mut Context<SettingsPanel
         .flex()
         .flex_col()
         .gap(px(10.))
-        .child(section_header("Anthropic", is_active, cx))
+        .child(section_header("Anthropic", ActiveProvider::Anthropic, is_active, cx))
         .child(field_row("API Key", &panel.anthropic_key))
         .child(field_row("Model", &panel.anthropic_model))
         .child(field_row("Max Tokens", &panel.anthropic_max_tokens))
@@ -432,7 +426,7 @@ fn render_openai_fields(panel: &SettingsPanel, cx: &mut Context<SettingsPanel>) 
         .flex()
         .flex_col()
         .gap(px(10.))
-        .child(section_header("OpenAI", is_active, cx))
+        .child(section_header("OpenAI", ActiveProvider::OpenAi, is_active, cx))
         .child(field_row("API Key", &panel.openai_key))
         .child(field_row("Base URL", &panel.openai_base_url))
         .child(field_row("Model", &panel.openai_model))
@@ -446,7 +440,7 @@ fn render_ollama_fields(panel: &SettingsPanel, cx: &mut Context<SettingsPanel>) 
         .flex()
         .flex_col()
         .gap(px(10.))
-        .child(section_header("Ollama", is_active, cx))
+        .child(section_header("Ollama", ActiveProvider::Ollama, is_active, cx))
         .child(field_row("Base URL", &panel.ollama_base_url))
         .child(field_row("Model", &panel.ollama_model))
         .child(field_row("Max Tokens", &panel.ollama_max_tokens))

@@ -945,9 +945,10 @@ impl Workspace {
             .map(|s| s.as_ref())
             .unwrap_or("unknown");
         let ns = self.active_namespace.as_ref();
-        let total = self.all_pods.len();
-        let running = self.all_pods.iter().filter(|p| p.status == "Running").count();
-        let resource_ctx = self.ai_panel.read(cx).context_text.clone();
+        let (running, total) = self.all_pods.iter().fold((0usize, 0usize), |(r, t), p| {
+            (r + (p.status == "Running") as usize, t + 1)
+        });
+        let resource_ctx = self.ai_panel.read(cx).context_text().map(str::to_owned);
 
         let mut prompt = format!(
             "You are a Kubernetes expert assistant integrated into Kairo, a native Kubernetes IDE.\n\

@@ -45,8 +45,10 @@ pub struct AiPanel {
     /// Accumulates tokens during a streaming response.
     streaming_buffer: Option<String>,
     /// Human-readable description of the currently selected K8s resource.
-    pub context_text: Option<String>,
+    context_text: Option<String>,
 }
+
+const MAX_AI_MESSAGES: usize = 100;
 
 impl AiPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -54,7 +56,6 @@ impl AiPanel {
             InputState::new(window, cx).placeholder("Ask about your cluster…")
         });
 
-        // Submit on Enter.
         cx.subscribe(&input, |this, state, event: &InputEvent, cx| {
             if let InputEvent::PressEnter { .. } = event {
                 let text = state.read(cx).value().to_string();
@@ -80,6 +81,9 @@ impl AiPanel {
             role: AiRole::User,
             content: text.to_string(),
         });
+        if self.messages.len() > MAX_AI_MESSAGES {
+            self.messages.drain(..self.messages.len() - MAX_AI_MESSAGES);
+        }
         self.streaming_buffer = Some(String::new());
         self.input.update(cx, |s, cx| s.set_value("", window, cx));
         cx.notify();
@@ -103,6 +107,9 @@ impl AiPanel {
                     role: AiRole::Assistant,
                     content: buf,
                 });
+                if self.messages.len() > MAX_AI_MESSAGES {
+                    self.messages.drain(..self.messages.len() - MAX_AI_MESSAGES);
+                }
             }
         }
         cx.notify();
@@ -121,6 +128,10 @@ impl AiPanel {
     /// Update the K8s resource context shown in the header and injected into prompts.
     pub fn set_context(&mut self, desc: String) {
         self.context_text = Some(desc);
+    }
+
+    pub fn context_text(&self) -> Option<&str> {
+        self.context_text.as_deref()
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -189,10 +200,13 @@ impl Panel for AiPanel {
 
 impl Render for AiPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let messages = self.messages.clone();
         let streaming = self.streaming_buffer.clone();
-        let context_label = self.context_text.clone();
+        let context_label = self.context_text.as_deref().map(|c| SharedString::from(format!("⬡ {c}")))
+            .unwrap_or_else(|| SharedString::from("No resource selected"));
         let is_streaming = self.is_streaming();
+        let messages_empty = self.messages.is_empty();
+        let streaming_none = streaming.is_none();
+        let messages = self.messages.to_vec();
 
         div()
             .size_full()
@@ -209,13 +223,9 @@ impl Render for AiPanel {
                     .border_color(BORDER)
                     .flex_shrink_0()
                     .child(
-                        Label::new(
-                            context_label
-                                .map(|c| SharedString::from(format!("⬡ {c}")))
-                                .unwrap_or_else(|| SharedString::from("No resource selected")),
-                        )
-                        .text_xs()
-                        .text_color(TEXT_MUTED),
+                        Label::new(context_label)
+                            .text_xs()
+                            .text_color(TEXT_MUTED),
                     )
                     .child(div().flex_1())
                     .child(
@@ -242,7 +252,7 @@ impl Render for AiPanel {
                     .gap(px(12.))
                     .children(messages.into_iter().map(render_entry))
                     .children(streaming.map(render_streaming_entry));
-                if self.messages.is_empty() && self.streaming_buffer.is_none() {
+                if messages_empty && streaming_none {
                     inner = inner.child(render_empty_state());
                 }
                 div().flex_1().min_h_0().child(inner.overflow_y_scrollbar())
