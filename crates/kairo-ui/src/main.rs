@@ -1,5 +1,6 @@
 mod actions;
 mod ai_client;
+mod analyze;
 mod app;
 mod components;
 mod kube_runtime;

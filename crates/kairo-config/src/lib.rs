@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod mcp;
 
 use std::{fs, path::PathBuf};
 
@@ -7,6 +8,7 @@ use thiserror::Error;
 use tracing::{info, warn};
 
 pub use ai::{ActiveProvider, AiConfig, AnthropicConfig, OllamaConfig, OpenAiConfig};
+pub use mcp::McpConfig;
 
 /// Errors that can occur when loading or saving configuration.
 #[derive(Debug, Error)]
@@ -26,7 +28,7 @@ pub enum ConfigError {
 #[serde(default)]
 pub struct KairoConfig {
     pub ai: AiConfig,
-    // general: GeneralConfig  ← reserved for Phase 17+
+    pub mcp: McpConfig,
 }
 
 impl KairoConfig {

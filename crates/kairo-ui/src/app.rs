@@ -29,6 +29,7 @@ use kairo_config::KairoConfig;
 use crate::{
     actions::{OpenCommandPalette, OpenSettings},
     ai_client,
+    analyze::AnalyzeEventRequest,
     components::{
         ai_panel::{AiPanel, AiSendMessage},
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
@@ -384,6 +385,25 @@ impl Workspace {
             window,
             |this, _, event: &AiSendMessage, window, cx| {
                 this.handle_ai_send(event.0.clone(), window, cx);
+            },
+        )
+        .detach();
+
+        // ── Subscribe to "Analyze" buttons in event cards ─────────────────────
+        cx.subscribe_in(
+            &event_feed,
+            window,
+            |this, _, event: &AnalyzeEventRequest, window, cx| {
+                this.handle_analyze_event(event.0.clone(), window, cx);
+            },
+        )
+        .detach();
+
+        cx.subscribe_in(
+            &detail_panel,
+            window,
+            |this, _, event: &AnalyzeEventRequest, window, cx| {
+                this.handle_analyze_event(event.0.clone(), window, cx);
             },
         )
         .detach();
@@ -937,7 +957,7 @@ impl Workspace {
         self.ensure_bottom_dock_open(window, cx);
     }
 
-    /// Build a system prompt that includes current cluster context.
+    /// Build the system prompt: SRE base + live cluster context appended.
     fn build_system_prompt(&self, cx: &App) -> String {
         let cluster = self
             .active_context
@@ -948,15 +968,19 @@ impl Workspace {
         let (running, total) = self.all_pods.iter().fold((0usize, 0usize), |(r, t), p| {
             (r + (p.status == "Running") as usize, t + 1)
         });
+        let mcp_line = if self.config.mcp.enabled {
+            format!("\n- MCP server: {}", self.config.mcp.server_url)
+        } else {
+            String::new()
+        };
         let resource_ctx = self.ai_panel.read(cx).context_text().map(str::to_owned);
 
         let mut prompt = format!(
-            "You are a Kubernetes expert assistant integrated into Kairo, a native Kubernetes IDE.\n\
-             Be concise, technical, and accurate. Format YAML examples in markdown code blocks.\n\n\
-             Current cluster context:\n\
+            "{}\n\nCurrent cluster context:\n\
              - Cluster: {cluster}\n\
              - Namespace filter: {ns}\n\
-             - Pods: {running}/{total} running"
+             - Pods: {running}/{total} running{mcp_line}",
+            ai_client::SYSTEM_PROMPT,
         );
 
         if let Some(ctx) = resource_ctx {
@@ -964,6 +988,61 @@ impl Workspace {
         }
 
         prompt
+    }
+
+    /// Handle an "Analyze" button click: send a structured event analysis prompt to the AI.
+    fn handle_analyze_event(&mut self, context_json: String, window: &mut Window, cx: &mut Context<Self>) {
+        let user_prompt = ai_client::build_event_analysis_prompt(&context_json);
+        // Display a short summary in the chat bubble; send the full prompt to the API.
+        let display = context_json
+            .lines()
+            .find(|l| l.contains("\"reason\""))
+            .and_then(|l| l.split('"').nth(3))
+            .map(|r| format!("Analyze event: {r}"))
+            .unwrap_or_else(|| "Analyze Kubernetes event".to_string());
+
+        self.ai_panel.update(cx, |p, cx| {
+            p.push_analysis_message(&display, &user_prompt, window, cx);
+        });
+
+        let messages = self.ai_panel.read(cx).build_api_messages();
+        let config = self.config.clone();
+        let system_prompt = self.build_system_prompt(cx);
+        let events = self.events.clone();
+
+        kube_runtime::handle().spawn(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<ai_client::StreamChunk>(128);
+            let events_inner = events.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) =
+                    ai_client::stream_completion(config, system_prompt, messages, tx).await
+                {
+                    events_inner
+                        .lock()
+                        .unwrap()
+                        .push_back(KubeEvent::AiError(e.to_string()));
+                }
+            });
+
+            while let Some(chunk) = rx.recv().await {
+                match chunk {
+                    ai_client::StreamChunk::Token(t) => {
+                        events.lock().unwrap().push_back(KubeEvent::AiToken(t));
+                    }
+                    ai_client::StreamChunk::Done => {
+                        events.lock().unwrap().push_back(KubeEvent::AiDone);
+                        break;
+                    }
+                }
+            }
+        });
+
+        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
+            self.dock_area.update(cx, |dock, cx| {
+                dock.toggle_dock(DockPlacement::Right, window, cx);
+            });
+        }
     }
 
     /// Push the namespace-filtered pod list to the panel (which re-applies search filters).

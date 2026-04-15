@@ -33,7 +33,11 @@ pub enum AiRole {
 #[derive(Clone, Debug)]
 pub struct ChatEntry {
     pub role: AiRole,
+    /// Display text shown in the chat bubble.
     pub content: String,
+    /// If set, this is what gets sent to the API instead of `content`.
+    /// Used when a structured prompt is too verbose to display in the UI.
+    pub api_content: Option<String>,
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -80,6 +84,7 @@ impl AiPanel {
         self.messages.push(ChatEntry {
             role: AiRole::User,
             content: text.to_string(),
+            api_content: None,
         });
         if self.messages.len() > MAX_AI_MESSAGES {
             self.messages.drain(..self.messages.len() - MAX_AI_MESSAGES);
@@ -106,6 +111,7 @@ impl AiPanel {
                 self.messages.push(ChatEntry {
                     role: AiRole::Assistant,
                     content: buf,
+                    api_content: None,
                 });
                 if self.messages.len() > MAX_AI_MESSAGES {
                     self.messages.drain(..self.messages.len() - MAX_AI_MESSAGES);
@@ -121,6 +127,7 @@ impl AiPanel {
         self.messages.push(ChatEntry {
             role: AiRole::Error,
             content: msg.to_string(),
+            api_content: None,
         });
         cx.notify();
     }
@@ -138,6 +145,29 @@ impl AiPanel {
         self.streaming_buffer.is_some()
     }
 
+    /// Push a user message with separate display text and API content.
+    ///
+    /// The chat bubble shows `display`; the full `api_content` is sent to the LLM.
+    pub fn push_analysis_message(
+        &mut self,
+        display: &str,
+        api_content: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.messages.push(ChatEntry {
+            role: AiRole::User,
+            content: display.to_string(),
+            api_content: Some(api_content.to_string()),
+        });
+        if self.messages.len() > MAX_AI_MESSAGES {
+            self.messages.drain(..self.messages.len() - MAX_AI_MESSAGES);
+        }
+        self.streaming_buffer = Some(String::new());
+        self.input.update(cx, |s, cx| s.set_value("", window, cx));
+        cx.notify();
+    }
+
     /// Build the messages list for the API call (converts ChatEntry → ChatMessage).
     pub fn build_api_messages(&self) -> Vec<ChatMessage> {
         self.messages
@@ -145,13 +175,13 @@ impl AiPanel {
             .filter_map(|e| match e.role {
                 AiRole::User => Some(ChatMessage {
                     role: "user".into(),
-                    content: e.content.clone(),
+                    content: e.api_content.as_deref().unwrap_or(&e.content).to_string(),
                 }),
                 AiRole::Assistant => Some(ChatMessage {
                     role: "assistant".into(),
                     content: e.content.clone(),
                 }),
-                AiRole::Error => None, // errors are UI-only, not sent to the API
+                AiRole::Error => None,
             })
             .collect()
     }

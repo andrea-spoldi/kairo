@@ -10,6 +10,59 @@ use kairo_config::{ActiveProvider, AnthropicConfig, KairoConfig, OllamaConfig, O
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+// ── Curated prompts ────────────────────────────────────────────────────────────
+
+/// System prompt for the Kubernetes SRE AI agent.
+pub const SYSTEM_PROMPT: &str = r#"You are an expert Kubernetes SRE assistant.
+
+Your job is to:
+- analyze cluster situations
+- propose likely causes
+- explain reasoning based on evidence
+- suggest next investigative steps
+
+Rules:
+- do not hallucinate missing data
+- always explain why
+- provide multiple hypotheses when possible
+- include confidence levels (low, medium, high)
+- prioritize actionable insights"#;
+
+/// Build the structured user prompt for event analysis.
+///
+/// `context_json` is a JSON string describing the event or resource to analyze.
+/// The prompt instructs the model to return a structured JSON response.
+pub fn build_event_analysis_prompt(context_json: &str) -> String {
+    format!(
+        r#"Analyze the following Kubernetes situation.
+
+Return:
+1. Likely causes
+2. Supporting evidence
+3. What to check next
+4. Confidence level
+
+Context:
+<JSON>
+{context_json}
+</JSON>
+
+Respond in JSON format:
+```json
+{{
+  "hypotheses": [
+    {{
+      "cause": "string",
+      "confidence": "low|medium|high",
+      "evidence": ["string"]
+    }}
+  ],
+  "next_steps": ["string"]
+}}
+```"#
+    )
+}
+
 // ── Public types ───────────────────────────────────────────────────────────────
 
 /// A single turn in the conversation sent to the API.
