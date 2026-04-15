@@ -101,7 +101,6 @@ async fn stream_anthropic(
         bail!("Anthropic API {status}: {text}");
     }
 
-    // Parse SSE stream: lines starting with "data: " carry JSON payloads.
     let mut buf = String::new();
     let mut stream = response.bytes_stream();
 
@@ -111,7 +110,7 @@ async fn stream_anthropic(
 
         while let Some(nl) = buf.find('\n') {
             let line = buf[..nl].trim().to_string();
-            buf = buf[nl + 1..].to_string();
+            buf.drain(..=nl);
 
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(v) = serde_json::from_str::<Value>(data) {
@@ -191,7 +190,7 @@ async fn stream_openai(
 
         while let Some(nl) = buf.find('\n') {
             let line = buf[..nl].trim().to_string();
-            buf = buf[nl + 1..].to_string();
+            buf.drain(..=nl);
 
             if let Some(data) = line.strip_prefix("data: ") {
                 if data == "[DONE]" {
@@ -224,7 +223,6 @@ async fn stream_ollama(
     messages: Vec<ChatMessage>,
     tx: mpsc::Sender<StreamChunk>,
 ) -> Result<()> {
-    // Ollama accepts a system message as the first entry in the messages array.
     let mut api_messages: Vec<Value> = vec![json!({"role": "system", "content": system_prompt})];
     for m in &messages {
         api_messages.push(json!({"role": m.role, "content": m.content}));
@@ -254,7 +252,6 @@ async fn stream_ollama(
         bail!("Ollama API {status}: {text}");
     }
 
-    // Ollama streams newline-delimited JSON objects.
     let mut buf = String::new();
     let mut stream = response.bytes_stream();
 
@@ -264,7 +261,7 @@ async fn stream_ollama(
 
         while let Some(nl) = buf.find('\n') {
             let line = buf[..nl].trim().to_string();
-            buf = buf[nl + 1..].to_string();
+            buf.drain(..=nl);
 
             if line.is_empty() {
                 continue;
