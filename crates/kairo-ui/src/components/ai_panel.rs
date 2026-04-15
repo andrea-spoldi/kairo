@@ -402,7 +402,7 @@ fn confidence_color(level: &str) -> Hsla {
 fn render_entry(entry: ChatEntry) -> impl IntoElement {
     let (role_label, role_color, bg, align_right) = match entry.role {
         AiRole::User => ("You", ACCENT, rgba(0x313244AA), true),
-        AiRole::Assistant => ("AI", TEXT_SECONDARY, rgba(0x1E1E2E00), false),
+        AiRole::Assistant => ("Kairo AI", TEXT_SECONDARY, rgba(0x1E1E2E00), false),
         AiRole::Error => ("Error", STATUS_FAILED, rgba(0x3D1515AA), false),
     };
 
@@ -575,7 +575,7 @@ fn render_streaming_entry(buf: String) -> impl IntoElement {
         .flex_col()
         .items_start()
         .gap(px(3.))
-        .child(Label::new("AI").text_xs().text_color(TEXT_SECONDARY))
+        .child(Label::new("Kairo AI").text_xs().text_color(TEXT_SECONDARY))
         .child(
             div()
                 .w_full()
