@@ -27,21 +27,23 @@ GPU-rendered, always up to date, with no browser and no cloud dependency.
 
 ```
 ┌─ Title bar ─────────────────────────────────────────────────────────────────┐
-│  Kairo   [cluster ▾]  [namespace ▾]                                         │
-├─ Cluster Health ──────┬─ Pods / Events ──────────────────────────────────── ┤
-│  ● 47  Running        │  NAME               STATUS    READY  RESTARTS  AGE  │
-│  ◐  2  Pending        │  api-server-x4k2p   ● Running  1/1        0   12d   │
-│  ✖  1  Failed         │  worker-65f9b       ✖ CrashLoop 0/1       14    3m  │
-│  ─────────────        │  ...                                                │
-│  NAMESPACES           ├─ Pod Detail ─────────────────────────────────────── ┤
-│  production   ✖1      │  worker-65f9b · CrashLoopBackOff                    │
-│  staging      ●8      │  Containers · Events · Labels                       │
-│  default      ●12     ├─ Logs ───────────────────────────────────────────── ┤
-│  ─────────────        │  [app] Error: connection refused to postgres:5432    │
-│  RECENT WARNINGS      │  [app] Backing off for 10s before retry…            │
-│  ⚠ BackOff   2m ago   │                                                     │
-│  ⚠ OOMKilled 5m ago   │                                                     │
-├───────────────────────┴─────────────────────────────────────────────────────┤
+│  Kairo   [cluster ▾]  [namespace ▾]                            ⚙            │
+├─ Cluster Health ──────┬─ Pods / Events ────────────────┬─ AI Agent ─────── ┤
+│  ● 47  Running        │  NAME          STATUS  RESTARTS │ ⬡ prod/worker-..  │
+│  ◐  2  Pending        │  api-server    ● Run        0   │                   │
+│  ✖  1  Failed         │  worker-65f9b  ✖ Crash     14   │ You               │
+│  ─────────────        ├─ Pod Detail ───────────────────┤ Analyze event:    │
+│  NAMESPACES           │  worker-65f9b · CrashLoopBackOff│ BackOff           │
+│  production   ✖1      │  Events                         │                   │
+│  staging      ●8      │  ✖ BackOff ×14  [⬡ Analyze]    │ AI                │
+│  ─────────────        ├─ Logs ─────────────────────────┤ ┌─ HIGH ────────┐ │
+│  RECENT WARNINGS      │  Error: connection refused      │ │ Image pull    │ │
+│  ⚠ BackOff  [⬡]      │                                 │ │ • BackOff ×14 │ │
+│                       │                                 │ └───────────────┘ │
+│                       │                                 │ Next Steps        │
+│                       │                                 │  1. Check image   │
+│                       │                                 │  2. Verify secret │
+├───────────────────────┴─────────────────────────────────┴───────────────────┤
 │  ● minikube  │  production  ·  ● 47  ◐ 2  ✖ 1  · 50 pods                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -63,6 +65,18 @@ GPU-rendered, always up to date, with no browser and no cloud dependency.
 - Metadata, labels, annotations, conditions, and container statuses
 - Related events fetched per pod
 - **Live log streaming** with container selector and auto-scroll
+
+### AI Agent (right dock)
+- Streaming chat backed by **Anthropic**, **OpenAI-compatible endpoints**, or **Ollama**
+- Context-aware: the selected resource (pod, deployment, …) is automatically injected into the system prompt
+- **`⬡ Analyze` button** on every warning event card and every pod event row — one click sends the event as a structured SRE analysis prompt to the agent
+- Analysis responses rendered as visual cards: color-coded confidence badges (`HIGH` / `MEDIUM` / `LOW`), evidence bullets, and numbered next steps
+- MCP server support: connect a [Kubernetes MCP server](https://modelcontextprotocol.io) to give the agent live cluster tool access
+
+### Settings (`⚙` or `Ctrl+,` / `Cmd+,`)
+- Per-provider configuration: Anthropic, OpenAI-compatible, Ollama
+- API keys persisted to `~/.kairo/config.toml` with `0600` Unix permissions
+- MCP server URL + enable/disable toggle
 
 ### Native & fast
 - Built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) — Zed's GPU-accelerated UI framework, no Electron
@@ -143,21 +157,30 @@ rules:
 ```
 kairo/
 ├── crates/
+│   ├── kairo-config/   # Persistent config — zero UI/core deps
+│   │   └── src/
+│   │       ├── ai.rs   # AiConfig, provider structs, ActiveProvider
+│   │       └── mcp.rs  # McpConfig — MCP server URL + enabled flag
 │   ├── kairo-core/     # K8s client, watchers, models — zero UI deps
-│   │   ├── client.rs   # kubeconfig loading, context switching
-│   │   ├── watchers.rs # event-driven pod/namespace/event watchers
-│   │   ├── models.rs   # PodSummary, PodDetail, ClusterEvent, …
-│   │   └── logs.rs     # log follow stream
+│   │   └── src/
+│   │       ├── client.rs   # kubeconfig loading, context switching
+│   │       ├── watchers.rs # event-driven pod/namespace/event watchers
+│   │       ├── models.rs   # PodSummary, PodDetail, ClusterEvent, …
+│   │       └── logs.rs     # log follow stream
 │   └── kairo-ui/       # GPUI application
 │       └── src/
 │           ├── app.rs               # root workspace, event bridge
+│           ├── ai_client.rs         # streaming LLM client (Anthropic/OpenAI/Ollama)
+│           ├── analyze.rs           # shared AnalyzeEventRequest event type
 │           ├── theme.rs             # semantic colour constants
 │           └── components/
+│               ├── ai_panel.rs        # streaming chat + rich analysis renderer
 │               ├── cluster_health.rs  # left sidebar
-│               ├── event_feed.rs      # warning events tab
+│               ├── event_feed.rs      # warning events tab + Analyze buttons
 │               ├── pod_list.rs        # main pod table
-│               ├── pod_detail.rs      # right detail panel
-│               └── log_viewer.rs      # bottom log panel
+│               ├── pod_detail.rs      # detail panel + Analyze buttons on events
+│               ├── log_viewer.rs      # bottom log panel
+│               └── settings_panel.rs  # settings modal (Anthropic/OpenAI/Ollama/MCP)
 └── scripts/
     ├── make-icons.sh   # PNG → .icns pipeline (macOS)
     └── make-dmg.sh     # .app bundle + DMG packaging (macOS)
@@ -168,11 +191,15 @@ testable. The UI crate calls core functions; it never constructs `Api<T>` direct
 
 ## Roadmap
 
-- [ ] Command palette (⌘K) — jump to any pod, switch context/namespace
-- [ ] Resource tree — Deployments, Services, ConfigMaps, Nodes
-- [ ] Raw YAML viewer with syntax highlighting
-- [ ] Node overview with CPU/memory allocation bars
-- [ ] AI-assisted diagnosis — MCP integration for "why is this pod failing?"
+- [x] Command palette (`⌘K` / `Ctrl+K`) — jump to any pod, switch context/namespace
+- [x] Resource tree — Deployments, Services, ConfigMaps, Nodes
+- [x] Raw YAML viewer with syntax highlighting
+- [x] Node overview with CPU/memory allocation bars
+- [x] Settings panel — LLM provider configuration persisted to `~/.kairo/config.toml`
+- [x] AI Agent panel — streaming chat with context-aware SRE prompts
+- [x] Event analysis — `⬡ Analyze` button on every warning event card
+- [x] MCP server integration settings — groundwork for live cluster tool-calling
+- [ ] Live MCP tool execution — let the agent call `kubectl` operations read-only
 - [ ] Multi-cluster tabs
 
 ## License

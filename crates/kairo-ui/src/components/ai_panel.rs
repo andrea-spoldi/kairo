@@ -6,10 +6,12 @@ use gpui_component::{
     label::Label,
     scroll::ScrollableElement,
 };
+use serde::Deserialize;
 
 use crate::ai_client::ChatMessage;
 use crate::theme::{
-    ACCENT, BORDER, HOVER_BG, STATUS_FAILED, SURFACE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    ACCENT, BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE, TEXT_MUTED,
+    TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
 // ── Events ─────────────────────────────────────────────────────────────────────
@@ -33,7 +35,11 @@ pub enum AiRole {
 #[derive(Clone, Debug)]
 pub struct ChatEntry {
     pub role: AiRole,
+    /// Display text shown in the chat bubble.
     pub content: String,
+    /// If set, this is what gets sent to the API instead of `content`.
+    /// Used when a structured prompt is too verbose to display in the UI.
+    pub api_content: Option<String>,
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -80,6 +86,7 @@ impl AiPanel {
         self.messages.push(ChatEntry {
             role: AiRole::User,
             content: text.to_string(),
+            api_content: None,
         });
         if self.messages.len() > MAX_AI_MESSAGES {
             self.messages.drain(..self.messages.len() - MAX_AI_MESSAGES);
@@ -106,6 +113,7 @@ impl AiPanel {
                 self.messages.push(ChatEntry {
                     role: AiRole::Assistant,
                     content: buf,
+                    api_content: None,
                 });
                 if self.messages.len() > MAX_AI_MESSAGES {
                     self.messages.drain(..self.messages.len() - MAX_AI_MESSAGES);
@@ -121,6 +129,7 @@ impl AiPanel {
         self.messages.push(ChatEntry {
             role: AiRole::Error,
             content: msg.to_string(),
+            api_content: None,
         });
         cx.notify();
     }
@@ -138,6 +147,29 @@ impl AiPanel {
         self.streaming_buffer.is_some()
     }
 
+    /// Push a user message with separate display text and API content.
+    ///
+    /// The chat bubble shows `display`; the full `api_content` is sent to the LLM.
+    pub fn push_analysis_message(
+        &mut self,
+        display: &str,
+        api_content: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.messages.push(ChatEntry {
+            role: AiRole::User,
+            content: display.to_string(),
+            api_content: Some(api_content.to_string()),
+        });
+        if self.messages.len() > MAX_AI_MESSAGES {
+            self.messages.drain(..self.messages.len() - MAX_AI_MESSAGES);
+        }
+        self.streaming_buffer = Some(String::new());
+        self.input.update(cx, |s, cx| s.set_value("", window, cx));
+        cx.notify();
+    }
+
     /// Build the messages list for the API call (converts ChatEntry → ChatMessage).
     pub fn build_api_messages(&self) -> Vec<ChatMessage> {
         self.messages
@@ -145,13 +177,13 @@ impl AiPanel {
             .filter_map(|e| match e.role {
                 AiRole::User => Some(ChatMessage {
                     role: "user".into(),
-                    content: e.content.clone(),
+                    content: e.api_content.as_deref().unwrap_or(&e.content).to_string(),
                 }),
                 AiRole::Assistant => Some(ChatMessage {
                     role: "assistant".into(),
                     content: e.content.clone(),
                 }),
-                AiRole::Error => None, // errors are UI-only, not sent to the API
+                AiRole::Error => None,
             })
             .collect()
     }
@@ -293,19 +325,88 @@ impl Render for AiPanel {
     }
 }
 
+// ── Analysis response model ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AnalysisResponse {
+    #[serde(default)]
+    hypotheses: Vec<Hypothesis>,
+    #[serde(default)]
+    next_steps: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Hypothesis {
+    cause: String,
+    #[serde(default = "default_confidence")]
+    confidence: String,
+    #[serde(default)]
+    evidence: Vec<String>,
+}
+
+fn default_confidence() -> String {
+    "medium".into()
+}
+
+/// Try to extract and parse analysis JSON from assistant content.
+///
+/// Handles raw JSON, markdown-fenced JSON (` ```json ... ``` `), and content
+/// that has preamble text before the JSON block.
+fn try_parse_analysis(content: &str) -> Option<AnalysisResponse> {
+    // Try: markdown code fence
+    if let Some(start) = content.find("```json") {
+        let json_start = start + 7; // skip ```json
+        if let Some(end) = content[json_start..].find("```") {
+            let json_str = content[json_start..json_start + end].trim();
+            if let Ok(r) = serde_json::from_str::<AnalysisResponse>(json_str) {
+                if !r.hypotheses.is_empty() {
+                    return Some(r);
+                }
+            }
+        }
+    }
+    // Try: raw JSON containing "hypotheses"
+    if let Some(start) = content.find("{\"hypotheses\"") {
+        // Find the matching closing brace
+        let slice = &content[start..];
+        if let Ok(r) = serde_json::from_str::<AnalysisResponse>(slice) {
+            if !r.hypotheses.is_empty() {
+                return Some(r);
+            }
+        }
+        // Fallback: braces may not align at end of string, try up to each '}'
+        for (i, c) in slice.char_indices().rev() {
+            if c == '}' {
+                if let Ok(r) = serde_json::from_str::<AnalysisResponse>(&slice[..=i]) {
+                    if !r.hypotheses.is_empty() {
+                        return Some(r);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    None
+}
+
+fn confidence_color(level: &str) -> Hsla {
+    match level.to_lowercase().as_str() {
+        "high" => STATUS_RUNNING,
+        "medium" => STATUS_PENDING,
+        _ => STATUS_FAILED,
+    }
+}
+
 // ── Entry renderers ────────────────────────────────────────────────────────────
 
 fn render_entry(entry: ChatEntry) -> impl IntoElement {
     let (role_label, role_color, bg, align_right) = match entry.role {
         AiRole::User => ("You", ACCENT, rgba(0x313244AA), true),
-        AiRole::Assistant => ("AI", TEXT_SECONDARY, rgba(0x1E1E2E00), false),
+        AiRole::Assistant => ("Kairo AI", TEXT_SECONDARY, rgba(0x1E1E2E00), false),
         AiRole::Error => ("Error", STATUS_FAILED, rgba(0x3D1515AA), false),
     };
 
-    let content = entry.content.clone();
-
     if align_right {
-        // User messages: right-aligned bubble.
         div()
             .flex()
             .flex_col()
@@ -322,29 +423,144 @@ fn render_entry(entry: ChatEntry) -> impl IntoElement {
                     .bg(bg)
                     .text_sm()
                     .text_color(TEXT_PRIMARY)
-                    .child(SharedString::from(content)),
+                    .child(SharedString::from(entry.content)),
             )
+            .into_any_element()
+    } else if entry.role == AiRole::Assistant {
+        // Try structured rendering for analysis responses.
+        if let Some(analysis) = try_parse_analysis(&entry.content) {
+            return render_analysis_entry(analysis);
+        }
+        render_plain_assistant(&entry.content)
     } else {
-        // AI / Error messages: left-aligned.
-        div()
+        render_plain_assistant(&entry.content)
+    }
+}
+
+fn render_plain_assistant(content: &str) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(3.))
+        .child(Label::new("AI").text_xs().text_color(TEXT_SECONDARY))
+        .child(
+            div()
+                .w_full()
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(px(8.))
+                .rounded_tl(px(2.))
+                .text_sm()
+                .text_color(TEXT_PRIMARY)
+                .child(SharedString::from(content.to_string())),
+        )
+        .into_any_element()
+}
+
+fn render_analysis_entry(analysis: AnalysisResponse) -> AnyElement {
+    let mut root = div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(3.))
+        .child(Label::new("AI").text_xs().text_color(TEXT_SECONDARY));
+
+    let mut card = div()
+        .w_full()
+        .px(px(10.))
+        .py(px(7.))
+        .rounded(px(8.))
+        .rounded_tl(px(2.))
+        .flex()
+        .flex_col()
+        .gap(px(10.));
+
+    // ── Hypotheses ────────────────────────────────────────────────────────────
+    for h in &analysis.hypotheses {
+        let conf_color = confidence_color(&h.confidence);
+        let conf_label = h.confidence.to_uppercase();
+
+        let mut hypothesis = div()
             .flex()
             .flex_col()
-            .items_start()
-            .gap(px(3.))
-            .child(Label::new(role_label).text_xs().text_color(role_color))
+            .gap(px(5.))
+            .px(px(8.))
+            .py(px(8.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(BORDER)
+            // Header: confidence badge + cause
             .child(
-                div()
-                    .w_full()
-                    .px(px(10.))
-                    .py(px(7.))
-                    .rounded(px(8.))
-                    .rounded_tl(px(2.))
-                    .bg(bg)
-                    .text_sm()
-                    .text_color(TEXT_PRIMARY)
-                    .child(SharedString::from(content)),
-            )
+                h_flex()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(3.))
+                            .bg(conf_color.opacity(0.15))
+                            .child(
+                                Label::new(SharedString::from(conf_label))
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(conf_color),
+                            ),
+                    )
+                    .child(
+                        Label::new(SharedString::from(h.cause.clone()))
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(TEXT_PRIMARY),
+                    ),
+            );
+
+        // Evidence bullets
+        if !h.evidence.is_empty() {
+            let mut evidence_col = div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .pl(px(4.));
+
+            for item in &h.evidence {
+                evidence_col = evidence_col.child(
+                    Label::new(SharedString::from(format!("  • {item}")))
+                        .text_xs()
+                        .text_color(TEXT_SECONDARY),
+                );
+            }
+            hypothesis = hypothesis.child(evidence_col);
+        }
+
+        card = card.child(hypothesis);
     }
+
+    // ── Next steps ────────────────────────────────────────────────────────────
+    if !analysis.next_steps.is_empty() {
+        let mut steps = div()
+            .flex()
+            .flex_col()
+            .gap(px(3.))
+            .child(
+                Label::new("Next Steps")
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(TEXT_MUTED),
+            );
+
+        for (i, step) in analysis.next_steps.iter().enumerate() {
+            steps = steps.child(
+                Label::new(SharedString::from(format!("  {}. {step}", i + 1)))
+                    .text_sm()
+                    .text_color(TEXT_PRIMARY),
+            );
+        }
+        card = card.child(steps);
+    }
+
+    root = root.child(card);
+    root.into_any_element()
 }
 
 fn render_streaming_entry(buf: String) -> impl IntoElement {
@@ -359,7 +575,7 @@ fn render_streaming_entry(buf: String) -> impl IntoElement {
         .flex_col()
         .items_start()
         .gap(px(3.))
-        .child(Label::new("AI").text_xs().text_color(TEXT_SECONDARY))
+        .child(Label::new("Kairo AI").text_xs().text_color(TEXT_SECONDARY))
         .child(
             div()
                 .w_full()

@@ -5,7 +5,7 @@ use gpui_component::{
     label::Label,
     scroll::ScrollableElement,
 };
-use kairo_config::{ActiveProvider, AiConfig, AnthropicConfig, KairoConfig, OllamaConfig, OpenAiConfig};
+use kairo_config::{ActiveProvider, AiConfig, AnthropicConfig, KairoConfig, McpConfig, OllamaConfig, OpenAiConfig};
 use tracing::error;
 
 use crate::theme::{ACCENT, BORDER, HOVER_BG, SURFACE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
@@ -25,6 +25,7 @@ enum ProviderTab {
     Anthropic,
     OpenAi,
     Ollama,
+    Mcp,
 }
 
 #[derive(Clone)]
@@ -57,6 +58,10 @@ pub struct SettingsPanel {
     ollama_base_url: Entity<InputState>,
     ollama_model: Entity<InputState>,
     ollama_max_tokens: Entity<InputState>,
+
+    // ── MCP fields ─────────────────────────────────────────────────────────────
+    mcp_server_url: Entity<InputState>,
+    mcp_enabled: bool,
 }
 
 impl SettingsPanel {
@@ -86,6 +91,9 @@ impl SettingsPanel {
             ollama_base_url: mk("http://localhost:11434")(cx, window),
             ollama_model: mk("llama3.2")(cx, window),
             ollama_max_tokens: mk("2048")(cx, window),
+
+            mcp_server_url: mk("http://localhost:8811")(cx, window),
+            mcp_enabled: false,
         }
     }
 
@@ -97,6 +105,7 @@ impl SettingsPanel {
     pub fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let cfg = KairoConfig::load().unwrap_or_default();
         self.active_provider = cfg.ai.active_provider.clone();
+        self.mcp_enabled = cfg.mcp.enabled;
         self.populate_from_config(&cfg, window, cx);
         self.save_status = SaveStatus::Idle;
         self.visible = true;
@@ -136,6 +145,9 @@ impl SettingsPanel {
         self.ollama_base_url.update(cx, |s, cx| s.set_value(olb, window, cx));
         self.ollama_model.update(cx, |s, cx| s.set_value(olm, window, cx));
         self.ollama_max_tokens.update(cx, |s, cx| s.set_value(olt, window, cx));
+
+        let mcp_url = cfg.mcp.server_url.clone();
+        self.mcp_server_url.update(cx, |s, cx| s.set_value(mcp_url, window, cx));
     }
 
     fn build_config(&self, cx: &mut Context<Self>) -> KairoConfig {
@@ -168,6 +180,10 @@ impl SettingsPanel {
                     ),
                 },
             },
+            mcp: McpConfig {
+                enabled: self.mcp_enabled,
+                server_url: self.mcp_server_url.read(cx).value().to_string(),
+            },
         }
     }
 
@@ -197,6 +213,7 @@ impl Render for SettingsPanel {
 
         let active_tab = self.active_tab.clone();
         let active_provider = self.active_provider.clone();
+        let mcp_enabled = self.mcp_enabled;
         let save_status = self.save_status.clone();
 
         // Full-screen backdrop.
@@ -250,20 +267,8 @@ impl Render for SettingsPanel {
                                     .child(Label::new("✕").text_xs().text_color(TEXT_MUTED)),
                             ),
                     )
-                    // ── AI section label ──────────────────────────────────────
-                    .child(
-                        div()
-                            .px(px(16.))
-                            .pt(px(12.))
-                            .pb(px(8.))
-                            .child(
-                                Label::new("AI Integration")
-                                    .text_xs()
-                                    .text_color(TEXT_SECONDARY),
-                            ),
-                    )
                     // ── Provider tabs ─────────────────────────────────────────
-                    .child(render_provider_tabs(active_tab.clone(), active_provider.clone(), cx))
+                    .child(render_provider_tabs(active_tab.clone(), active_provider.clone(), mcp_enabled, cx))
                     // Divider below tabs.
                     .child(div().h_px().bg(BORDER))
                     // ── Tab content ───────────────────────────────────────────
@@ -281,6 +286,7 @@ impl Render for SettingsPanel {
                                 ProviderTab::Anthropic => render_anthropic_fields(self, cx),
                                 ProviderTab::OpenAi => render_openai_fields(self, cx),
                                 ProviderTab::Ollama => render_ollama_fields(self, cx),
+                                ProviderTab::Mcp => render_mcp_fields(self, cx),
                             }),
                     )
                     // ── Footer ────────────────────────────────────────────────
@@ -296,6 +302,7 @@ impl Render for SettingsPanel {
 fn render_provider_tabs(
     active_tab: ProviderTab,
     active_provider: ActiveProvider,
+    mcp_enabled: bool,
     cx: &mut Context<SettingsPanel>,
 ) -> impl IntoElement {
     h_flex()
@@ -321,6 +328,13 @@ fn render_provider_tabs(
             ProviderTab::Ollama,
             &active_tab,
             active_provider == ActiveProvider::Ollama,
+            cx,
+        ))
+        .child(tab_button(
+            "MCP",
+            ProviderTab::Mcp,
+            &active_tab,
+            mcp_enabled,
             cx,
         ))
 }
@@ -444,6 +458,57 @@ fn render_ollama_fields(panel: &SettingsPanel, cx: &mut Context<SettingsPanel>) 
         .child(field_row("Base URL", &panel.ollama_base_url))
         .child(field_row("Model", &panel.ollama_model))
         .child(field_row("Max Tokens", &panel.ollama_max_tokens))
+        .into_any_element()
+}
+
+fn render_mcp_fields(panel: &SettingsPanel, cx: &mut Context<SettingsPanel>) -> AnyElement {
+    let is_enabled = panel.mcp_enabled;
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            h_flex()
+                .gap(px(8.))
+                .mb(px(4.))
+                .child(
+                    Label::new("Kubernetes MCP Server")
+                        .text_sm()
+                        .text_color(TEXT_SECONDARY),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .cursor_pointer()
+                        .px(px(8.))
+                        .py(px(3.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(if is_enabled { ACCENT } else { BORDER })
+                        .hover(|s| s.bg(HOVER_BG))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.mcp_enabled = !this.mcp_enabled;
+                                cx.notify();
+                            }),
+                        )
+                        .child(
+                            Label::new(if is_enabled { "● Enabled" } else { "Enable" })
+                                .text_xs()
+                                .text_color(if is_enabled { ACCENT } else { TEXT_MUTED }),
+                        ),
+                ),
+        )
+        .child(field_row("Server URL", &panel.mcp_server_url))
+        .child(
+            Label::new(
+                "Connect to a Kubernetes MCP server to give the AI agent\n\
+                 live cluster access via tool-calling.",
+            )
+            .text_xs()
+            .text_color(TEXT_MUTED),
+        )
         .into_any_element()
 }
 

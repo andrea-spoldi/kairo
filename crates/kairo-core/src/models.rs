@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::Utc;
+use serde::Serialize;
 use k8s_openapi::api::apps::v1::Deployment as K8sDeployment;
 use k8s_openapi::api::core::v1::{
     ConfigMap as K8sConfigMap, ContainerState, ContainerStatus as K8sContainerStatus,
@@ -183,7 +184,7 @@ fn container_state_string(state: &Option<ContainerState>) -> String {
 // ── PodEvent ──────────────────────────────────────────────────────────────────
 
 /// A Kubernetes event related to a Pod.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PodEvent {
     /// Short, CamelCase reason (e.g. "BackOff").
     pub reason: String,
@@ -271,7 +272,7 @@ impl From<Pod> for PodDetail {
 // ── ClusterEvent ─────────────────────────────────────────────────────────────
 
 /// A Kubernetes cluster-level event (used for warning aggregation in the sidebar).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ClusterEvent {
     /// Namespace where the event originated.
     pub namespace: String,

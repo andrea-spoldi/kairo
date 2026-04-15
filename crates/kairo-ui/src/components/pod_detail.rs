@@ -8,9 +8,10 @@ use kairo_core::{
     models::{ConfigMapSummary, DeploymentSummary, NodeSummary, PodDetail, ServiceSummary},
 };
 
+use crate::analyze::AnalyzeEventRequest;
 use crate::theme::{
-    status_color, status_symbol, BORDER, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE,
-    TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    status_color, status_symbol, ACCENT, BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING,
+    STATUS_RUNNING, SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
 // ── ResourceDetail ────────────────────────────────────────────────────────────
@@ -47,6 +48,7 @@ impl DetailPanel {
 }
 
 impl EventEmitter<PanelEvent> for DetailPanel {}
+impl EventEmitter<AnalyzeEventRequest> for DetailPanel {}
 
 impl Focusable for DetailPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle { self.focus_handle.clone() }
@@ -60,7 +62,7 @@ impl Panel for DetailPanel {
 }
 
 impl Render for DetailPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(detail) = self.detail.as_ref() else {
             return div()
                 .size_full()
@@ -80,7 +82,7 @@ impl Render for DetailPanel {
             .p_4()
             .gap_4()
             .child(match &detail {
-                ResourceDetail::Pod(d)        => render_pod(d),
+                ResourceDetail::Pod(d)        => render_pod(d, cx),
                 ResourceDetail::Deployment(d) => render_deployment(d),
                 ResourceDetail::Service(d)    => render_service(d),
                 ResourceDetail::ConfigMap(d)  => render_configmap(d),
@@ -209,7 +211,7 @@ fn name_header(name: &str, kind: &str, namespace: &str, age: &str) -> Div {
 
 // ── Pod renderer ──────────────────────────────────────────────────────────────
 
-fn render_pod(detail: &PodDetail) -> AnyElement {
+fn render_pod(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyElement {
     let s = &detail.summary;
 
     div()
@@ -230,7 +232,7 @@ fn render_pod(detail: &PodDetail) -> AnyElement {
         .child(render_kv_section("Labels", &detail.labels))
         .child(render_kv_section("Annotations", &detail.annotations))
         .child(render_pod_containers(detail))
-        .child(render_pod_events(detail))
+        .child(render_pod_events(detail, cx))
         .into_any_element()
 }
 
@@ -301,7 +303,7 @@ fn render_pod_containers(detail: &PodDetail) -> AnyElement {
     section.into_any_element()
 }
 
-fn render_pod_events(detail: &PodDetail) -> AnyElement {
+fn render_pod_events(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyElement {
     let mut section = div()
         .flex()
         .flex_col()
@@ -311,8 +313,24 @@ fn render_pod_events(detail: &PodDetail) -> AnyElement {
     if detail.events.is_empty() {
         section = section.child(Label::new("  No events").text_sm().text_color(TEXT_MUTED));
     } else {
+        let pod_name = detail.summary.name.clone();
+        let pod_ns = detail.summary.namespace.clone();
+        let pod_status = detail.summary.status.clone();
+
         for ev in &detail.events {
             let type_color = if ev.event_type == "Warning" { STATUS_FAILED } else { TEXT_SECONDARY };
+            let json = serde_json::json!({
+                "pod": format!("{pod_ns}/{pod_name}"),
+                "pod_status": pod_status,
+                "event_type": ev.event_type,
+                "reason": ev.reason,
+                "message": ev.message,
+                "count": ev.count,
+                "first_time": ev.first_time,
+                "last_time": ev.last_time,
+            });
+            let json_str = serde_json::to_string_pretty(&json).unwrap_or_default();
+
             section = section.child(
                 div()
                     .flex()
@@ -320,6 +338,9 @@ fn render_pod_events(detail: &PodDetail) -> AnyElement {
                     .gap(px(2.))
                     .px_2()
                     .py_1()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(BORDER)
                     .child(
                         h_flex()
                             .gap_2()
@@ -339,6 +360,24 @@ fn render_pod_events(detail: &PodDetail) -> AnyElement {
                                 Label::new(format!("×{}", ev.count))
                                     .text_sm()
                                     .text_color(TEXT_MUTED),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .px(px(6.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .border_1()
+                                    .border_color(ACCENT)
+                                    .hover(|s| s.bg(HOVER_BG))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |_this, _, _, cx| {
+                                            cx.emit(AnalyzeEventRequest(json_str.clone()));
+                                        }),
+                                    )
+                                    .child(Label::new("⬡ Analyze").text_xs().text_color(ACCENT)),
                             ),
                     )
                     .child(Label::new(ev.message.clone()).text_sm().text_color(TEXT_SECONDARY)),
