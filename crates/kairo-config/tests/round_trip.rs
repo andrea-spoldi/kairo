@@ -23,6 +23,7 @@ fn round_trip_with_values() {
             },
             ..Default::default()
         },
+        ..Default::default()
     };
     let toml_str = toml::to_string_pretty(&cfg).expect("serialize");
     let parsed: KairoConfig = toml::from_str(&toml_str).expect("deserialize");
