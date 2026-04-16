@@ -657,8 +657,10 @@ impl Workspace {
             }
             KubeEvent::McpReady(client, tools) => {
                 info!("MCP connected — {} tool(s) available", tools.len());
+                let n = tools.len();
                 self.mcp_client = Some(client);
                 self.mcp_tools = tools;
+                self.ai_panel.update(cx, |p, cx| p.set_mcp_tool_count(n, cx));
             }
             KubeEvent::AiToolCallStart(name) => {
                 self.ai_panel.update(cx, |panel, cx| panel.push_tool_call(&name, cx));
@@ -1019,23 +1021,35 @@ impl Workspace {
         let (running, total) = self.all_pods.iter().fold((0usize, 0usize), |(r, t), p| {
             (r + (p.status == "Running") as usize, t + 1)
         });
-        let mcp_line = if self.config.mcp.enabled {
-            format!("\n- MCP server: {}", self.config.mcp.server_url)
-        } else {
-            String::new()
-        };
         let resource_ctx = self.ai_panel.read(cx).context_text().map(str::to_owned);
 
         let mut prompt = format!(
             "{}\n\nCurrent cluster context:\n\
              - Cluster: {cluster}\n\
              - Namespace filter: {ns}\n\
-             - Pods: {running}/{total} running{mcp_line}",
+             - Pods: {running}/{total} running",
             ai_client::SYSTEM_PROMPT,
         );
 
         if let Some(ctx) = resource_ctx {
             prompt.push_str(&format!("\n- Selected resource: {ctx}"));
+        }
+
+        // When MCP tools are available, list their names and instruct the model
+        // to call them for live cluster data rather than guessing from context.
+        if !self.mcp_tools.is_empty() {
+            let names = self
+                .mcp_tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            prompt.push_str(&format!(
+                "\n\nYou have access to live Kubernetes cluster tools via MCP.\n\
+                 ALWAYS call the appropriate tool when the user asks about current \
+                 cluster state (pods, logs, events, deployments, etc.).\n\
+                 Available tools: {names}"
+            ));
         }
 
         prompt
@@ -1067,15 +1081,19 @@ impl Workspace {
     }
 
     /// Run a one-shot MCP connect to test the URL from the Settings panel.
-    /// Pushes `KubeEvent::McpTestResult` with the outcome so the panel can display it.
+    /// On success pushes both `McpReady` (activates tools for the agent immediately)
+    /// and `McpTestResult` (updates the settings panel display).
     fn handle_mcp_test(&self, url: String) {
         let queue = self.events.clone();
         kube_runtime::handle().spawn(async move {
             match McpClient::connect(&url).await {
-                Ok((_, tools)) => {
+                Ok((client, tools)) => {
                     let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
                     let status = format!("Connected — {} tool(s)", names.len());
-                    queue.lock().unwrap().push_back(KubeEvent::McpTestResult(status, names));
+                    let mut q = queue.lock().unwrap();
+                    // Wire the client into the agent immediately — no need to save settings first.
+                    q.push_back(KubeEvent::McpReady(Arc::new(client), tools));
+                    q.push_back(KubeEvent::McpTestResult(status, names));
                 }
                 Err(e) => {
                     queue

@@ -1,4 +1,4 @@
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     dock::{Panel, PanelEvent},
     h_flex,
@@ -53,6 +53,8 @@ pub struct AiPanel {
     streaming_buffer: Option<String>,
     /// Human-readable description of the currently selected K8s resource.
     context_text: Option<String>,
+    /// Number of MCP tools currently available (0 = MCP not connected).
+    mcp_tool_count: usize,
 }
 
 const MAX_AI_MESSAGES: usize = 100;
@@ -77,6 +79,7 @@ impl AiPanel {
             messages: Vec::new(),
             streaming_buffer: None,
             context_text: None,
+            mcp_tool_count: 0,
         }
     }
 
@@ -152,6 +155,12 @@ impl AiPanel {
 
     pub fn context_text(&self) -> Option<&str> {
         self.context_text.as_deref()
+    }
+
+    /// Update the MCP tool count shown in the panel header.
+    pub fn set_mcp_tool_count(&mut self, n: usize, cx: &mut Context<Self>) {
+        self.mcp_tool_count = n;
+        cx.notify();
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -250,6 +259,7 @@ impl Render for AiPanel {
         let messages_empty = self.messages.is_empty();
         let streaming_none = streaming.is_none();
         let messages = self.messages.to_vec();
+        let mcp_tool_count = self.mcp_tool_count;
 
         div()
             .size_full()
@@ -271,6 +281,20 @@ impl Render for AiPanel {
                             .text_color(TEXT_MUTED),
                     )
                     .child(div().flex_1())
+                    // MCP tools badge — only shown when at least one tool is active.
+                    .when(mcp_tool_count > 0, |el| {
+                        el.child(
+                            h_flex()
+                                .gap(px(3.))
+                                .items_center()
+                                .child(Label::new("⬡").text_xs().text_color(STATUS_PENDING))
+                                .child(
+                                    Label::new(SharedString::from(format!("{mcp_tool_count} tools")))
+                                        .text_xs()
+                                        .text_color(STATUS_PENDING),
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .cursor_pointer()
