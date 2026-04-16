@@ -46,6 +46,9 @@ impl McpClient {
     }
 
     /// Send a JSON-RPC 2.0 request and return the `result` field.
+    ///
+    /// Handles both plain-JSON and SSE (text/event-stream) responses, as
+    /// permitted by the MCP Streamable-HTTP transport spec.
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let body = json!({
@@ -58,6 +61,8 @@ impl McpClient {
             .http
             .post(&self.base_url)
             .header("content-type", "application/json")
+            // Tell the server we accept both transports.
+            .header("accept", "application/json, text/event-stream")
             .json(&body)
             .send()
             .await
@@ -69,7 +74,20 @@ impl McpClient {
             bail!("MCP {s}: {t}");
         }
 
-        let v: Value = resp.json().await.context("MCP: invalid JSON response")?;
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let v: Value = if content_type.contains("text/event-stream") {
+            let text = resp.text().await.context("MCP: failed to read SSE body")?;
+            parse_sse_json(&text)?
+        } else {
+            resp.json().await.context("MCP: invalid JSON response")?
+        };
+
         if let Some(err) = v.get("error") {
             bail!("MCP error: {err}");
         }
@@ -137,4 +155,35 @@ impl McpClient {
 
         Ok(result.to_string())
     }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+/// Extract the first JSON object from an SSE body.
+///
+/// SSE lines look like:
+/// ```text
+/// event: message
+/// data: {"jsonrpc":"2.0","id":1,"result":{...}}
+/// ```
+/// We scan for the first `data:` line that parses as JSON and return it.
+fn parse_sse_json(sse_body: &str) -> Result<Value> {
+    for line in sse_body.lines() {
+        let data = if let Some(d) = line.strip_prefix("data: ") {
+            d.trim()
+        } else if let Some(d) = line.strip_prefix("data:") {
+            d.trim()
+        } else {
+            continue;
+        };
+
+        if data.is_empty() {
+            continue;
+        }
+
+        if let Ok(v) = serde_json::from_str::<Value>(data) {
+            return Ok(v);
+        }
+    }
+    bail!("MCP: no JSON data found in SSE response")
 }
