@@ -5,7 +5,6 @@ use gpui_component::{
     label::Label,
     scroll::ScrollableElement,
 };
-use crate::mcp_client::McpClient;
 use kairo_config::{KairoConfig, ActiveProvider, AiConfig, AnthropicConfig, OpenAiConfig, OllamaConfig, McpConfig};
 
 fn parse_u32(s: &str, default: u32) -> u32 {
@@ -23,6 +22,13 @@ use crate::theme::{ACCENT, BORDER, HOVER_BG, SURFACE, TEXT_MUTED, TEXT_PRIMARY, 
 pub struct SettingsSaved(pub KairoConfig);
 
 impl EventEmitter<SettingsSaved> for SettingsPanel {}
+
+/// Emitted when the user clicks "Test Connection" on the MCP tab.
+/// `app.rs` handles this by spawning a tokio task (reqwest can't run on smol).
+#[derive(Clone, Debug)]
+pub struct McpTestRequest(pub String);
+
+impl EventEmitter<McpTestRequest> for SettingsPanel {}
 
 // ── Internal types ─────────────────────────────────────────────────────────────
 
@@ -125,6 +131,18 @@ impl SettingsPanel {
 
     pub fn hide(&mut self, cx: &mut Context<Self>) {
         self.visible = false;
+        cx.notify();
+    }
+
+    /// Called by `app.rs` with the result of the "Test Connection" attempt.
+    pub fn set_mcp_test_result(
+        &mut self,
+        status: String,
+        tools: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.test_status = status;
+        self.test_tools = tools;
         cx.notify();
     }
 
@@ -524,24 +542,12 @@ fn render_mcp_fields(panel: &SettingsPanel, cx: &mut Context<SettingsPanel>) -> 
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
                         let url = this.mcp_server_url.read(cx).value().to_string();
-                        cx.spawn(async move {
-                            let result = McpClient::connect(&url).await;
-                            match result {
-                                Ok((_, tools)) => {
-                                    let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-                                    cx.update(move |this, cx| {
-                                        this.test_status = format!("Connected: {}", url);
-                                        this.test_tools = names;
-                                    });
-                                }
-                                Err(e) => {
-                                    cx.update(move |this, cx| {
-                                        this.test_status = format!("Error: {}", e);
-                                        this.test_tools.clear();
-                                    });
-                                }
-                            }
-                        });
+                        this.test_status = "Connecting…".to_string();
+                        this.test_tools.clear();
+                        cx.notify();
+                        // Delegate to app.rs which runs this on the tokio runtime
+                        // (reqwest cannot run on GPUI's smol executor).
+                        cx.emit(McpTestRequest(url));
                     }),
                 )
                 .child(Label::new("Test Connection").text_xs()),

@@ -43,7 +43,7 @@ use crate::{
             ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ResourceSelected,
             ServiceListPanel,
         },
-        settings_panel::{SettingsPanel, SettingsSaved},
+        settings_panel::{McpTestRequest, SettingsPanel, SettingsSaved},
         yaml_viewer::{yaml_title, YamlViewerPanel},
     },
     kube_runtime,
@@ -84,6 +84,8 @@ enum KubeEvent {
     McpReady(Arc<McpClient>, Vec<McpTool>),
     /// The AI agent is about to call a named MCP tool.
     AiToolCallStart(String),
+    /// Result of a manual "Test Connection" from the Settings panel.
+    McpTestResult(String, Vec<String>),
 }
 
 type EventQueue = Arc<Mutex<VecDeque<KubeEvent>>>;
@@ -389,6 +391,16 @@ impl Workspace {
         )
         .detach();
 
+        // ── Subscribe to MCP test connection requests ─────────────────────────
+        cx.subscribe_in(
+            &settings_panel,
+            window,
+            |this, _, event: &McpTestRequest, _window, _cx| {
+                this.handle_mcp_test(event.0.clone());
+            },
+        )
+        .detach();
+
         // ── Subscribe to AI send message ──────────────────────────────────────
         cx.subscribe_in(
             &ai_panel,
@@ -650,6 +662,10 @@ impl Workspace {
             }
             KubeEvent::AiToolCallStart(name) => {
                 self.ai_panel.update(cx, |panel, cx| panel.push_tool_call(&name, cx));
+            }
+            KubeEvent::McpTestResult(status, tools) => {
+                self.settings_panel
+                    .update(cx, |p, cx| p.set_mcp_test_result(status, tools, cx));
             }
         }
     }
@@ -1045,6 +1061,27 @@ impl Workspace {
                 }
                 Err(e) => {
                     tracing::warn!("MCP connect failed ({}): {e}", url);
+                }
+            }
+        });
+    }
+
+    /// Run a one-shot MCP connect to test the URL from the Settings panel.
+    /// Pushes `KubeEvent::McpTestResult` with the outcome so the panel can display it.
+    fn handle_mcp_test(&self, url: String) {
+        let queue = self.events.clone();
+        kube_runtime::handle().spawn(async move {
+            match McpClient::connect(&url).await {
+                Ok((_, tools)) => {
+                    let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+                    let status = format!("Connected — {} tool(s)", names.len());
+                    queue.lock().unwrap().push_back(KubeEvent::McpTestResult(status, names));
+                }
+                Err(e) => {
+                    queue
+                        .lock()
+                        .unwrap()
+                        .push_back(KubeEvent::McpTestResult(format!("Error: {e}"), vec![]));
                 }
             }
         });
