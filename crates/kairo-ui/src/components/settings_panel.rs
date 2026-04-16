@@ -5,7 +5,13 @@ use gpui_component::{
     label::Label,
     scroll::ScrollableElement,
 };
-use kairo_config::{ActiveProvider, AiConfig, AnthropicConfig, KairoConfig, McpConfig, OllamaConfig, OpenAiConfig};
+use crate::mcp_client::McpClient;
+use kairo_config::{KairoConfig, ActiveProvider, AiConfig, AnthropicConfig, OpenAiConfig, OllamaConfig, McpConfig};
+
+fn parse_u32(s: &str, default: u32) -> u32 {
+    s.parse::<u32>().unwrap_or(default)
+}
+
 use tracing::error;
 
 use crate::theme::{ACCENT, BORDER, HOVER_BG, SURFACE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
@@ -62,6 +68,8 @@ pub struct SettingsPanel {
     // ── MCP fields ─────────────────────────────────────────────────────────────
     mcp_server_url: Entity<InputState>,
     mcp_enabled: bool,
+    test_status: String,
+    test_tools: Vec<String>,
 }
 
 impl SettingsPanel {
@@ -94,6 +102,8 @@ impl SettingsPanel {
 
             mcp_server_url: mk("http://localhost:8811")(cx, window),
             mcp_enabled: false,
+            test_status: String::new(),
+            test_tools: Vec::new(),
         }
     }
 
@@ -502,14 +512,46 @@ fn render_mcp_fields(panel: &SettingsPanel, cx: &mut Context<SettingsPanel>) -> 
         )
         .child(field_row("Server URL", &panel.mcp_server_url))
         .child(
-            Label::new(
-                "Connect to a Kubernetes MCP server to give the AI agent\n\
-                 live cluster access via tool-calling.",
-            )
-            .text_xs()
-            .text_color(TEXT_MUTED),
+            div()
+                .cursor_pointer()
+                .px(px(8.))
+                .py(px(3.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(HOVER_BG)
+                .hover(|s| s.bg(HOVER_BG))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        let url = this.mcp_server_url.read(cx).value().to_string();
+                        cx.spawn(async move {
+                            let result = McpClient::connect(&url).await;
+                            match result {
+                                Ok((_, tools)) => {
+                                    let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+                                    cx.update(move |this, cx| {
+                                        this.test_status = format!("Connected: {}", url);
+                                        this.test_tools = names;
+                                    });
+                                }
+                                Err(e) => {
+                                    cx.update(move |this, cx| {
+                                        this.test_status = format!("Error: {}", e);
+                                        this.test_tools.clear();
+                                    });
+                                }
+                            }
+                        });
+                    }),
+                )
+                .child(Label::new("Test Connection").text_xs()),
         )
+        .child(Label::new(&panel.test_status).text_xs().text_color(TEXT_MUTED))
+        .child(Label::new(format!("Tools: {}", panel.test_tools.join(", "))).text_xs().text_color(TEXT_MUTED))
         .into_any_element()
+
+
+
 }
 
 fn render_footer(save_status: SaveStatus, cx: &mut Context<SettingsPanel>) -> impl IntoElement {
@@ -561,6 +603,4 @@ fn render_footer(save_status: SaveStatus, cx: &mut Context<SettingsPanel>) -> im
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-fn parse_u32(s: &str, default: u32) -> u32 {
-    s.trim().parse::<u32>().unwrap_or(default)
-}
+// parse_u32 already defined above

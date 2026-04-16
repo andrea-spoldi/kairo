@@ -27,13 +27,17 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// Connect to the MCP server: run the `initialize` handshake and fetch the
-    /// tool list.  Returns `(client, tools)` on success.
     pub async fn connect(base_url: &str) -> Result<(Self, Vec<McpTool>)> {
         let http = reqwest::Client::new();
+        let mut url = base_url.trim_end_matches('/').to_string();
+        if let Ok(parsed) = reqwest::Url::parse(&url) {
+            if parsed.path() == "/" || parsed.path().is_empty() {
+                url.push_str("/mcp");
+            }
+        }
         let client = Self {
             http,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url: url,
             next_id: AtomicU64::new(1),
         };
         client.initialize().await?;

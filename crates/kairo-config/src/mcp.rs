@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct McpConfig {
     pub enabled: bool,
-    /// URL of the running kubernetes-mcp-server (e.g. `http://localhost:8811`).
+    /// URL of the running kubernetes-mcp-server (e.g. `http://localhost:8811/mcp`).
     pub server_url: String,
 }
 
@@ -16,7 +16,7 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            server_url: "http://localhost:8811".into(),
+            server_url: "http://localhost:8811/mcp".into(),
         }
     }
 }
