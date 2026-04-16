@@ -563,7 +563,41 @@ fn render_analysis_entry(analysis: AnalysisResponse) -> AnyElement {
     root.into_any_element()
 }
 
+/// Returns `true` when the streaming buffer looks like structured analysis JSON
+/// (raw `{…` or markdown-fenced ````json`). In that case we hide the raw tokens
+/// and show a friendly placeholder instead.
+fn looks_like_analysis_json(buf: &str) -> bool {
+    let trimmed = buf.trim_start();
+    if trimmed.starts_with("```json") || trimmed.starts_with("```\n{") {
+        return true;
+    }
+    if trimmed.starts_with('{') && trimmed.contains("\"hypothes") {
+        return true;
+    }
+    false
+}
+
 fn render_streaming_entry(buf: String) -> impl IntoElement {
+    if looks_like_analysis_json(&buf) {
+        return div()
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap(px(3.))
+            .child(Label::new("Kairo AI").text_xs().text_color(TEXT_SECONDARY))
+            .child(
+                div()
+                    .w_full()
+                    .px(px(10.))
+                    .py(px(7.))
+                    .rounded(px(8.))
+                    .rounded_tl(px(2.))
+                    .text_sm()
+                    .text_color(STATUS_PENDING)
+                    .child(SharedString::from("Analyzing situation… ▊")),
+            );
+    }
+
     let display = if buf.is_empty() {
         "▊".to_string()
     } else {
