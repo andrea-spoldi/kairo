@@ -30,6 +30,7 @@ use crate::{
     actions::{OpenCommandPalette, OpenSettings},
     ai_client,
     analyze::AnalyzeEventRequest,
+    mcp_client::{McpClient, McpTool},
     components::{
         ai_panel::{AiPanel, AiSendMessage},
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
@@ -79,6 +80,10 @@ enum KubeEvent {
     AiToken(String),
     AiDone,
     AiError(String),
+    /// MCP server connected and tool list fetched.
+    McpReady(Arc<McpClient>, Vec<McpTool>),
+    /// The AI agent is about to call a named MCP tool.
+    AiToolCallStart(String),
 }
 
 type EventQueue = Arc<Mutex<VecDeque<KubeEvent>>>;
@@ -119,6 +124,10 @@ pub struct Workspace {
     active_namespace: SharedString,
     active_context: Option<SharedString>,
     kube_client: Option<KubeClient>,
+    /// Connected MCP client (None when MCP is disabled or not yet connected).
+    mcp_client: Option<Arc<McpClient>>,
+    /// Tools fetched from the MCP server at connection time.
+    mcp_tools: Vec<McpTool>,
     /// Events posted by tokio tasks, drained by the GPUI poll loop.
     events: EventQueue,
     /// Set to true to signal the running watcher/receiver to stop.
@@ -375,6 +384,7 @@ impl Workspace {
             window,
             |this, _, event: &SettingsSaved, _window, _cx| {
                 this.config = event.0.clone();
+                this.init_mcp();
             },
         )
         .detach();
@@ -456,6 +466,8 @@ impl Workspace {
             active_namespace: SharedString::from("All"),
             active_context: current_ctx.clone(),
             kube_client: None,
+            mcp_client: None,
+            mcp_tools: Vec::new(),
             events,
             abort_flag,
             log_abort,
@@ -468,6 +480,9 @@ impl Workspace {
         if let Some(ctx) = current_ctx {
             ws.switch_context(ctx.to_string(), window, cx);
         }
+
+        // Attempt MCP connection if enabled in config.
+        ws.init_mcp();
 
         ws
     }
@@ -627,6 +642,14 @@ impl Workspace {
             KubeEvent::AiError(msg) => {
                 error!("ai error: {msg}");
                 self.ai_panel.update(cx, |panel, cx| panel.set_error(&msg, cx));
+            }
+            KubeEvent::McpReady(client, tools) => {
+                info!("MCP connected — {} tool(s) available", tools.len());
+                self.mcp_client = Some(client);
+                self.mcp_tools = tools;
+            }
+            KubeEvent::AiToolCallStart(name) => {
+                self.ai_panel.update(cx, |panel, cx| panel.push_tool_call(&name, cx));
             }
         }
     }
@@ -914,6 +937,8 @@ impl Workspace {
         let messages = self.ai_panel.read(cx).build_api_messages();
         let config = self.config.clone();
         let system_prompt = self.build_system_prompt(cx);
+        let mcp_client = self.mcp_client.clone();
+        let mcp_tools = self.mcp_tools.clone();
         let events = self.events.clone();
 
         kube_runtime::handle().spawn(async move {
@@ -921,8 +946,15 @@ impl Workspace {
             let events_inner = events.clone();
 
             tokio::spawn(async move {
-                if let Err(e) =
-                    ai_client::stream_completion(config, system_prompt, messages, tx).await
+                if let Err(e) = ai_client::stream_completion(
+                    config,
+                    system_prompt,
+                    messages,
+                    mcp_client,
+                    mcp_tools,
+                    tx,
+                )
+                .await
                 {
                     events_inner
                         .lock()
@@ -935,6 +967,9 @@ impl Workspace {
                 match chunk {
                     ai_client::StreamChunk::Token(t) => {
                         events.lock().unwrap().push_back(KubeEvent::AiToken(t));
+                    }
+                    ai_client::StreamChunk::ToolCallStart(name) => {
+                        events.lock().unwrap().push_back(KubeEvent::AiToolCallStart(name));
                     }
                     ai_client::StreamChunk::Done => {
                         events.lock().unwrap().push_back(KubeEvent::AiDone);
@@ -990,6 +1025,31 @@ impl Workspace {
         prompt
     }
 
+    /// Connect to the MCP server if enabled in config.  Clears any previous
+    /// client if MCP is disabled.  Called on startup and after every settings save.
+    fn init_mcp(&mut self) {
+        if !self.config.mcp.enabled || self.config.mcp.server_url.trim().is_empty() {
+            self.mcp_client = None;
+            self.mcp_tools.clear();
+            return;
+        }
+        let url = self.config.mcp.server_url.clone();
+        let queue = self.events.clone();
+        kube_runtime::handle().spawn(async move {
+            match McpClient::connect(&url).await {
+                Ok((client, tools)) => {
+                    queue
+                        .lock()
+                        .unwrap()
+                        .push_back(KubeEvent::McpReady(Arc::new(client), tools));
+                }
+                Err(e) => {
+                    tracing::warn!("MCP connect failed ({}): {e}", url);
+                }
+            }
+        });
+    }
+
     /// Handle an "Analyze" button click: send a structured event analysis prompt to the AI.
     fn handle_analyze_event(&mut self, context_json: String, window: &mut Window, cx: &mut Context<Self>) {
         let user_prompt = ai_client::build_event_analysis_prompt(&context_json);
@@ -1008,6 +1068,8 @@ impl Workspace {
         let messages = self.ai_panel.read(cx).build_api_messages();
         let config = self.config.clone();
         let system_prompt = self.build_system_prompt(cx);
+        let mcp_client = self.mcp_client.clone();
+        let mcp_tools = self.mcp_tools.clone();
         let events = self.events.clone();
 
         kube_runtime::handle().spawn(async move {
@@ -1015,8 +1077,15 @@ impl Workspace {
             let events_inner = events.clone();
 
             tokio::spawn(async move {
-                if let Err(e) =
-                    ai_client::stream_completion(config, system_prompt, messages, tx).await
+                if let Err(e) = ai_client::stream_completion(
+                    config,
+                    system_prompt,
+                    messages,
+                    mcp_client,
+                    mcp_tools,
+                    tx,
+                )
+                .await
                 {
                     events_inner
                         .lock()
@@ -1029,6 +1098,9 @@ impl Workspace {
                 match chunk {
                     ai_client::StreamChunk::Token(t) => {
                         events.lock().unwrap().push_back(KubeEvent::AiToken(t));
+                    }
+                    ai_client::StreamChunk::ToolCallStart(name) => {
+                        events.lock().unwrap().push_back(KubeEvent::AiToolCallStart(name));
                     }
                     ai_client::StreamChunk::Done => {
                         events.lock().unwrap().push_back(KubeEvent::AiDone);

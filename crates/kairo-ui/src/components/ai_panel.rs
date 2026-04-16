@@ -29,6 +29,7 @@ impl EventEmitter<PanelEvent> for AiPanel {}
 pub enum AiRole {
     User,
     Assistant,
+    ToolCall,
     Error,
 }
 
@@ -134,6 +135,16 @@ impl AiPanel {
         cx.notify();
     }
 
+    /// Append an inline "⬡ Calling <name>…" card when the agent invokes a tool.
+    pub fn push_tool_call(&mut self, tool_name: &str, cx: &mut Context<Self>) {
+        self.messages.push(ChatEntry {
+            role: AiRole::ToolCall,
+            content: tool_name.to_string(),
+            api_content: None,
+        });
+        cx.notify();
+    }
+
     /// Update the K8s resource context shown in the header and injected into prompts.
     pub fn set_context(&mut self, desc: String) {
         self.context_text = Some(desc);
@@ -183,7 +194,7 @@ impl AiPanel {
                     role: "assistant".into(),
                     content: e.content.clone(),
                 }),
-                AiRole::Error => None,
+                AiRole::ToolCall | AiRole::Error => None,
             })
             .collect()
     }
@@ -400,9 +411,25 @@ fn confidence_color(level: &str) -> Hsla {
 // ── Entry renderers ────────────────────────────────────────────────────────────
 
 fn render_entry(entry: ChatEntry) -> impl IntoElement {
+    // Tool call cards are rendered separately before the generic bubble logic.
+    if entry.role == AiRole::ToolCall {
+        return h_flex()
+            .gap(px(4.))
+            .items_center()
+            .py(px(2.))
+            .child(Label::new("⬡").text_xs().text_color(STATUS_PENDING))
+            .child(
+                Label::new(SharedString::from(format!("Calling {}…", entry.content)))
+                    .text_xs()
+                    .text_color(TEXT_MUTED),
+            )
+            .into_any_element();
+    }
+
     let (role_label, role_color, bg, align_right) = match entry.role {
         AiRole::User => ("You", ACCENT, rgba(0x313244AA), true),
         AiRole::Assistant => ("Kairo AI", TEXT_SECONDARY, rgba(0x1E1E2E00), false),
+        AiRole::ToolCall => unreachable!(),
         AiRole::Error => ("Error", STATUS_FAILED, rgba(0x3D1515AA), false),
     };
 
