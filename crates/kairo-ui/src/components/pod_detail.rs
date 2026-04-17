@@ -5,7 +5,10 @@ use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
 use kairo_core::{
     fmt_cpu, fmt_memory,
-    models::{ConfigMapSummary, DeploymentSummary, NodeSummary, PodDetail, ServiceSummary},
+    models::{
+        ConfigMapSummary, DeploymentSummary, GenericResourceDetail, NodeSummary, PodDetail,
+        ServiceSummary,
+    },
 };
 
 use crate::analyze::AnalyzeEventRequest;
@@ -24,6 +27,9 @@ pub enum ResourceDetail {
     Service(ServiceSummary),
     ConfigMap(ConfigMapSummary),
     Node(NodeSummary),
+    /// Fallback view for kinds without a typed renderer, or for resources whose
+    /// typed fetch failed (deleted / forbidden).
+    Generic(GenericResourceDetail),
 }
 
 // ── DetailPanel ───────────────────────────────────────────────────────────────
@@ -87,6 +93,7 @@ impl Render for DetailPanel {
                 ResourceDetail::Service(d)    => render_service(d),
                 ResourceDetail::ConfigMap(d)  => render_configmap(d),
                 ResourceDetail::Node(d)       => render_node(d),
+                ResourceDetail::Generic(d)    => render_generic(d),
             })
             .into_any_element()
     }
@@ -457,6 +464,77 @@ fn render_configmap(c: &ConfigMapSummary) -> AnyElement {
                         .text_color(TEXT_MUTED),
                 ),
         )
+        .into_any_element()
+}
+
+// ── Generic renderer ──────────────────────────────────────────────────────────
+
+fn render_generic(d: &GenericResourceDetail) -> AnyElement {
+    let ns = if d.namespace.is_empty() { "<cluster>".to_string() } else { d.namespace.clone() };
+    let age = d.age.clone().unwrap_or_else(|| "?".to_string());
+
+    let body: AnyElement = if let Some(reason) = d.error.as_ref() {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(STATUS_FAILED)
+            .child(
+                Label::new("Resource unavailable")
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(STATUS_FAILED),
+            )
+            .child(
+                Label::new(format!(
+                    "The {} may have been deleted or is not accessible. ({reason})",
+                    d.kind
+                ))
+                .text_sm()
+                .text_color(TEXT_MUTED),
+            )
+            .into_any_element()
+    } else if d.loading {
+        Label::new("Loading…")
+            .text_sm()
+            .text_color(TEXT_MUTED)
+            .into_any_element()
+    } else {
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(section_title("Overview"))
+            .child(kv_row("Kind", d.kind.clone()))
+            .child(kv_row("Namespace", ns.clone()))
+            .child(kv_row("Name", d.name.clone()))
+            .child(kv_row("Age", age.clone()));
+        if let Some(status) = d.status_summary.as_ref() {
+            section = section.child(kv_row("Status", status.clone()));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(section)
+            .child(
+                Label::new("Open the YAML tab for the full manifest")
+                    .text_xs()
+                    .text_color(TEXT_MUTED),
+            )
+            .into_any_element()
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .child(name_header(&d.name, &d.kind, &ns, &age))
+        .child(body)
         .into_any_element()
 }
 

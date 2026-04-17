@@ -81,6 +81,7 @@ impl Render for StatsPanel {
                 ResourceDetail::Service(s) => render_service_stats(s),
                 ResourceDetail::ConfigMap(c) => render_configmap_stats(c),
                 ResourceDetail::Node(n) => render_node_stats(n),
+                ResourceDetail::Generic(_) => empty_state("No stats for this resource kind"),
             })
             .into_any_element()
     }

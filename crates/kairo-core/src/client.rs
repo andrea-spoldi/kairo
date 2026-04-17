@@ -1,10 +1,13 @@
+use std::sync::Arc;
+
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Event, Node, Pod, Service};
-use kube::api::ListParams;
+use kube::api::{Api, DynamicObject, ListParams};
 use kube::config::{Config, KubeConfigOptions, Kubeconfig};
-use kube::Api;
+use kube::discovery::{Discovery, Scope};
+use tokio::sync::OnceCell;
 
-use crate::models::{PodDetail, PodEvent};
+use crate::models::{GenericResourceDetail, PodDetail, PodEvent};
 use crate::CoreError;
 
 impl std::fmt::Debug for KubeClient {
@@ -22,6 +25,7 @@ pub struct KubeClient {
     pub client: kube::Client,
     /// The kubeconfig context this client was created for.
     pub context: String,
+    discovery: Arc<OnceCell<Arc<Discovery>>>,
 }
 
 impl KubeClient {
@@ -38,7 +42,7 @@ impl KubeClient {
         )
         .await?;
         let client = kube::Client::try_from(config)?;
-        Ok(Self { client, context })
+        Ok(Self { client, context, discovery: Arc::new(OnceCell::new()) })
     }
 
     /// Create a client for the given named context.
@@ -61,7 +65,7 @@ impl KubeClient {
         )
         .await?;
         let client = kube::Client::try_from(config)?;
-        Ok(Self { client, context })
+        Ok(Self { client, context, discovery: Arc::new(OnceCell::new()) })
     }
 
     /// Return all context names present in the default kubeconfig.
@@ -120,6 +124,64 @@ impl KubeClient {
         let api: Api<Node> = Api::all(self.client.clone());
         let obj = api.get(name).await?;
         serde_yaml::to_string(&obj).map_err(|e| CoreError::Other(e.to_string()))
+    }
+
+    /// Fetch a resource via API discovery and return both its YAML manifest
+    /// and a derived `GenericResourceDetail`, so the UI can populate the YAML
+    /// tab and the Details tab from a single round-trip.
+    ///
+    /// Works for every kind the cluster exposes (built-ins + CRDs). Pass an
+    /// empty `namespace` for cluster-scoped kinds (Node, PersistentVolume, …).
+    pub async fn fetch_any_yaml_and_detail(
+        &self,
+        kind: &str,
+        namespace: &str,
+        name: &str,
+    ) -> Result<(String, GenericResourceDetail), CoreError> {
+        let obj = self.fetch_dynamic(kind, namespace, name).await?;
+        let manifest = serde_json::to_value(&obj).map_err(|e| CoreError::Other(e.to_string()))?;
+        let detail = GenericResourceDetail::from_manifest(kind, namespace, name, &manifest);
+        let yaml = serde_yaml::to_string(&obj).map_err(|e| CoreError::Other(e.to_string()))?;
+        Ok((yaml, detail))
+    }
+
+    async fn fetch_dynamic(
+        &self,
+        kind: &str,
+        namespace: &str,
+        name: &str,
+    ) -> Result<DynamicObject, CoreError> {
+        // Discovery enumerates every API group/version in the cluster — one
+        // `/apis` call plus one per group. We run it once per `KubeClient`
+        // (so once per context) and share the result across every dynamic
+        // fetch. `switch_context` rebuilds the `KubeClient`, which resets
+        // this cache and picks up CRDs installed before the switch.
+        let discovery = self
+            .discovery
+            .get_or_try_init(|| async {
+                Discovery::new(self.client.clone())
+                    .run()
+                    .await
+                    .map(Arc::new)
+                    .map_err(|e| CoreError::Other(format!("discovery: {e}")))
+            })
+            .await?;
+
+        let (ar, caps) = discovery
+            .groups()
+            .flat_map(|g| g.recommended_resources())
+            .find(|(ar, _)| ar.kind == kind)
+            .ok_or_else(|| CoreError::Other(format!("unknown resource kind: {kind}")))?;
+
+        let api: Api<DynamicObject> = match caps.scope {
+            Scope::Namespaced if !namespace.is_empty() => {
+                Api::namespaced_with(self.client.clone(), namespace, &ar)
+            }
+            Scope::Namespaced => Api::default_namespaced_with(self.client.clone(), &ar),
+            Scope::Cluster => Api::all_with(self.client.clone(), &ar),
+        };
+
+        api.get(name).await.map_err(CoreError::from)
     }
 
     /// Fetch Kubernetes events related to a specific pod.
