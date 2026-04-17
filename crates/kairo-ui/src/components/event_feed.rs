@@ -15,6 +15,15 @@ use crate::theme::{
 
 const MAX_EVENTS: usize = 100;
 
+/// Emitted when the user clicks an event card body. Drives the right-dock
+/// inspector to show the involved resource (details, YAML, logs, stats).
+#[derive(Clone)]
+pub struct EventResourceSelected {
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+}
+
 /// Center-panel tab — live feed of cluster-wide Warning events.
 pub struct EventFeedPanel {
     focus_handle: FocusHandle,
@@ -22,6 +31,7 @@ pub struct EventFeedPanel {
 }
 
 impl EventEmitter<AnalyzeEventRequest> for EventFeedPanel {}
+impl EventEmitter<EventResourceSelected> for EventFeedPanel {}
 
 impl EventFeedPanel {
     pub fn new(cx: &mut App) -> Self {
@@ -128,7 +138,8 @@ impl Render for EventFeedPanel {
 fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> impl IntoElement {
     let ev_clone = ev.clone();
     let json = serde_json::json!({
-        "resource": format!("{}/{}", ev.namespace, ev.object_name),
+        "resource": format!("{} {}/{}", ev.object_kind, ev.namespace, ev.object_name),
+        "kind": ev.object_kind,
         "event_type": ev.event_type,
         "reason": ev.reason,
         "message": ev.message,
@@ -137,7 +148,16 @@ fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> imp
     });
     let json_str = serde_json::to_string_pretty(&json).unwrap_or_default();
 
+    // Card body click → select resource in inspector.
+    let sel_kind = ev.object_kind.clone();
+    let sel_ns = ev.namespace.clone();
+    let sel_name = ev.object_name.clone();
+    let card_id = ElementId::Name(
+        format!("event-card-{}-{}-{}", ev.namespace, ev.object_name, ev.last_time).into(),
+    );
+
     div()
+        .id(card_id)
         .flex()
         .flex_col()
         .gap(px(3.))
@@ -147,6 +167,17 @@ fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> imp
         .border_1()
         .border_color(BORDER)
         .bg(SURFACE)
+        .cursor_pointer()
+        .hover(|s| s.bg(HOVER_BG))
+        .on_click(cx.listener(move |_this, _: &ClickEvent, _window, cx| {
+            if !sel_kind.is_empty() && !sel_name.is_empty() {
+                cx.emit(EventResourceSelected {
+                    kind: sel_kind.clone(),
+                    namespace: sel_ns.clone(),
+                    name: sel_name.clone(),
+                });
+            }
+        }))
         // ── Reason + count + Analyze button ──────────────────────────────────
         .child(
             h_flex()
@@ -175,6 +206,7 @@ fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> imp
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |_this, _, _, cx| {
+                                cx.stop_propagation();
                                 cx.emit(AnalyzeEventRequest(json_str.clone()));
                             }),
                         )
