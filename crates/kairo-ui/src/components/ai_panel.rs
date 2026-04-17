@@ -1,4 +1,4 @@
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     dock::{Panel, PanelEvent},
     h_flex,
@@ -29,6 +29,7 @@ impl EventEmitter<PanelEvent> for AiPanel {}
 pub enum AiRole {
     User,
     Assistant,
+    ToolCall,
     Error,
 }
 
@@ -52,6 +53,8 @@ pub struct AiPanel {
     streaming_buffer: Option<String>,
     /// Human-readable description of the currently selected K8s resource.
     context_text: Option<String>,
+    /// Number of MCP tools currently available (0 = MCP not connected).
+    mcp_tool_count: usize,
 }
 
 const MAX_AI_MESSAGES: usize = 100;
@@ -76,6 +79,7 @@ impl AiPanel {
             messages: Vec::new(),
             streaming_buffer: None,
             context_text: None,
+            mcp_tool_count: 0,
         }
     }
 
@@ -134,6 +138,16 @@ impl AiPanel {
         cx.notify();
     }
 
+    /// Append an inline "⬡ Calling <name>…" card when the agent invokes a tool.
+    pub fn push_tool_call(&mut self, tool_name: &str, cx: &mut Context<Self>) {
+        self.messages.push(ChatEntry {
+            role: AiRole::ToolCall,
+            content: tool_name.to_string(),
+            api_content: None,
+        });
+        cx.notify();
+    }
+
     /// Update the K8s resource context shown in the header and injected into prompts.
     pub fn set_context(&mut self, desc: String) {
         self.context_text = Some(desc);
@@ -141,6 +155,12 @@ impl AiPanel {
 
     pub fn context_text(&self) -> Option<&str> {
         self.context_text.as_deref()
+    }
+
+    /// Update the MCP tool count shown in the panel header.
+    pub fn set_mcp_tool_count(&mut self, n: usize, cx: &mut Context<Self>) {
+        self.mcp_tool_count = n;
+        cx.notify();
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -183,7 +203,7 @@ impl AiPanel {
                     role: "assistant".into(),
                     content: e.content.clone(),
                 }),
-                AiRole::Error => None,
+                AiRole::ToolCall | AiRole::Error => None,
             })
             .collect()
     }
@@ -239,6 +259,7 @@ impl Render for AiPanel {
         let messages_empty = self.messages.is_empty();
         let streaming_none = streaming.is_none();
         let messages = self.messages.to_vec();
+        let mcp_tool_count = self.mcp_tool_count;
 
         div()
             .size_full()
@@ -260,6 +281,20 @@ impl Render for AiPanel {
                             .text_color(TEXT_MUTED),
                     )
                     .child(div().flex_1())
+                    // MCP tools badge — only shown when at least one tool is active.
+                    .when(mcp_tool_count > 0, |el| {
+                        el.child(
+                            h_flex()
+                                .gap(px(3.))
+                                .items_center()
+                                .child(Label::new("⬡").text_xs().text_color(STATUS_PENDING))
+                                .child(
+                                    Label::new(SharedString::from(format!("{mcp_tool_count} tools")))
+                                        .text_xs()
+                                        .text_color(STATUS_PENDING),
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .cursor_pointer()
@@ -400,9 +435,25 @@ fn confidence_color(level: &str) -> Hsla {
 // ── Entry renderers ────────────────────────────────────────────────────────────
 
 fn render_entry(entry: ChatEntry) -> impl IntoElement {
+    // Tool call cards are rendered separately before the generic bubble logic.
+    if entry.role == AiRole::ToolCall {
+        return h_flex()
+            .gap(px(4.))
+            .items_center()
+            .py(px(2.))
+            .child(Label::new("⬡").text_xs().text_color(STATUS_PENDING))
+            .child(
+                Label::new(SharedString::from(format!("Calling {}…", entry.content)))
+                    .text_xs()
+                    .text_color(TEXT_MUTED),
+            )
+            .into_any_element();
+    }
+
     let (role_label, role_color, bg, align_right) = match entry.role {
         AiRole::User => ("You", ACCENT, rgba(0x313244AA), true),
         AiRole::Assistant => ("Kairo AI", TEXT_SECONDARY, rgba(0x1E1E2E00), false),
+        AiRole::ToolCall => unreachable!(),
         AiRole::Error => ("Error", STATUS_FAILED, rgba(0x3D1515AA), false),
     };
 
@@ -563,7 +614,41 @@ fn render_analysis_entry(analysis: AnalysisResponse) -> AnyElement {
     root.into_any_element()
 }
 
+/// Returns `true` when the streaming buffer looks like structured analysis JSON
+/// (raw `{…` or markdown-fenced ````json`). In that case we hide the raw tokens
+/// and show a friendly placeholder instead.
+fn looks_like_analysis_json(buf: &str) -> bool {
+    let trimmed = buf.trim_start();
+    if trimmed.starts_with("```json") || trimmed.starts_with("```\n{") {
+        return true;
+    }
+    if trimmed.starts_with('{') && trimmed.contains("\"hypothes") {
+        return true;
+    }
+    false
+}
+
 fn render_streaming_entry(buf: String) -> impl IntoElement {
+    if looks_like_analysis_json(&buf) {
+        return div()
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap(px(3.))
+            .child(Label::new("Kairo AI").text_xs().text_color(TEXT_SECONDARY))
+            .child(
+                div()
+                    .w_full()
+                    .px(px(10.))
+                    .py(px(7.))
+                    .rounded(px(8.))
+                    .rounded_tl(px(2.))
+                    .text_sm()
+                    .text_color(STATUS_PENDING)
+                    .child(SharedString::from("Analyzing situation… ▊")),
+            );
+    }
+
     let display = if buf.is_empty() {
         "▊".to_string()
     } else {

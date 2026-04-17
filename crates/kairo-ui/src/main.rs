@@ -4,6 +4,7 @@ mod analyze;
 mod app;
 mod components;
 mod kube_runtime;
+mod mcp_client;
 mod theme;
 
 use app::Workspace;
