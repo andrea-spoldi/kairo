@@ -276,6 +276,8 @@ impl From<Pod> for PodDetail {
 pub struct ClusterEvent {
     /// Namespace where the event originated.
     pub namespace: String,
+    /// Kind of the involved object (Pod, Deployment, Service, …).
+    pub object_kind: String,
     /// Name of the involved object.
     pub object_name: String,
     /// Short, CamelCase reason (e.g. "BackOff", "Failed").
@@ -297,10 +299,12 @@ impl From<K8sEvent> for ClusterEvent {
             .as_ref()
             .map(|t| t.0.to_string())
             .unwrap_or_default();
+        let object_kind = ev.involved_object.kind.clone().unwrap_or_default();
         let object_name = ev.involved_object.name.clone().unwrap_or_default();
         let namespace = ev.metadata.namespace.clone().unwrap_or_default();
         ClusterEvent {
             namespace,
+            object_kind,
             object_name,
             reason: ev.reason.unwrap_or_default(),
             message: ev.message.unwrap_or_default(),

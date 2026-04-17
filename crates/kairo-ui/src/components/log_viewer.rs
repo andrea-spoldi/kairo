@@ -4,7 +4,7 @@ use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 
-use crate::theme::{ACCENT, BORDER, HOVER_BG, SELECTED_BG, TEXT_PRIMARY, TEXT_SECONDARY};
+use crate::theme::{ACCENT, BORDER, HOVER_BG, SELECTED_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
 
 const MAX_LINES: usize = 5_000;
 
@@ -82,6 +82,17 @@ impl LogViewerPanel {
         cx.notify();
     }
 
+    /// Reset to a "no pod selected" empty state — used when the inspector is
+    /// showing a non-Pod resource (Deployment, Service, …).
+    pub fn set_no_pod(&mut self, cx: &mut Context<Self>) {
+        self.pod_label = None;
+        self.containers.clear();
+        self.selected_container_ix = 0;
+        self.lines.clear();
+        self.paused = false;
+        cx.notify();
+    }
+
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
         self.paused = !self.paused;
         if !self.paused && !self.lines.is_empty() {
@@ -133,6 +144,17 @@ impl Render for LogViewerPanel {
         let line_count = self.lines.len();
         // Clone is cheap — SharedString wraps an Arc.
         let lines = self.lines.clone();
+
+        if self.pod_label.is_none() {
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(TEXT_MUTED)
+                .child("Logs available when a Pod is selected")
+                .into_any_element();
+        }
 
         div().size_full().flex().flex_col()
             // ── Toolbar ───────────────────────────────────────────────────────
@@ -237,5 +259,6 @@ impl Render for LogViewerPanel {
                 .w_full()
                 .track_scroll(&self.scroll_handle),
             )
+            .into_any_element()
     }
 }

@@ -35,7 +35,7 @@ use crate::{
         ai_panel::{AiPanel, AiSendMessage},
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
         command_palette::{CommandPalette, PaletteAction},
-        event_feed::EventFeedPanel,
+        event_feed::{EventFeedPanel, EventResourceSelected},
         log_viewer::{ContainerSelected, LogViewerPanel},
         pod_detail::{DetailPanel, ResourceDetail},
         pod_list::{PodListPanel, PodSelected},
@@ -44,6 +44,7 @@ use crate::{
             ServiceListPanel,
         },
         settings_panel::{McpTestRequest, SettingsPanel, SettingsSaved},
+        stats_panel::StatsPanel,
         yaml_viewer::{yaml_title, YamlViewerPanel},
     },
     kube_runtime,
@@ -54,7 +55,7 @@ use crate::{
 };
 
 const DOCK_ID: &str = "kairo-dock";
-const DOCK_VERSION: usize = 5;
+const DOCK_VERSION: usize = 6;
 const POLL_INTERVAL_MS: u64 = 100;
 
 // ── Event queue shared between the tokio kube tasks and the GPUI poll loop ──
@@ -107,6 +108,7 @@ pub struct Workspace {
     detail_panel: Entity<DetailPanel>,
     yaml_panel: Entity<YamlViewerPanel>,
     log_panel: Entity<LogViewerPanel>,
+    stats_panel: Entity<StatsPanel>,
     palette: Entity<CommandPalette>,
     settings_panel: Entity<SettingsPanel>,
     ai_panel: Entity<AiPanel>,
@@ -195,44 +197,49 @@ impl Workspace {
         let detail_panel = cx.new(|cx| DetailPanel::new(cx));
         let yaml_panel = cx.new(|cx| YamlViewerPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
+        let stats_panel = cx.new(|cx| StatsPanel::new(cx));
         let ai_panel = cx.new(|cx| AiPanel::new(window, cx));
 
-        let left_panel = DockItem::tab(health_panel.clone(), &weak_dock, window, cx);
-        // Center dock: Pods | Deployments | Services | ConfigMaps | Nodes | Events
-        let center = DockItem::tabs(
+        // ── Situational-awareness dock layout (Phase 18+) ────────────────────
+        // Left:   Health summary + resource lists (navigator tabs).
+        // Center: Warning event feed (the focal point).
+        // Right:  Inspector — Details / YAML / Logs / Stats for the selection.
+        // Bottom: AI agent panel, always visible.
+        let left_panel = DockItem::tabs(
             vec![
-                Arc::new(pod_list_panel.clone())    as Arc<dyn PanelView>,
-                Arc::new(deployment_panel.clone())  as Arc<dyn PanelView>,
-                Arc::new(service_panel.clone())     as Arc<dyn PanelView>,
-                Arc::new(configmap_panel.clone())   as Arc<dyn PanelView>,
-                Arc::new(node_panel.clone())        as Arc<dyn PanelView>,
-                Arc::new(event_feed.clone())        as Arc<dyn PanelView>,
+                Arc::new(health_panel.clone())     as Arc<dyn PanelView>,
+                Arc::new(pod_list_panel.clone())   as Arc<dyn PanelView>,
+                Arc::new(deployment_panel.clone()) as Arc<dyn PanelView>,
+                Arc::new(service_panel.clone())    as Arc<dyn PanelView>,
+                Arc::new(configmap_panel.clone())  as Arc<dyn PanelView>,
+                Arc::new(node_panel.clone())       as Arc<dyn PanelView>,
             ],
             &weak_dock,
             window,
             cx,
         );
-        // Bottom dock: Details | YAML | Logs — all detail views together.
-        // Right dock is reserved for the AI panel (Phase 15).
-        let bottom = DockItem::tabs(
+
+        let center = DockItem::tab(event_feed.clone(), &weak_dock, window, cx);
+
+        let right = DockItem::tabs(
             vec![
                 Arc::new(detail_panel.clone()) as Arc<dyn PanelView>,
                 Arc::new(yaml_panel.clone())   as Arc<dyn PanelView>,
                 Arc::new(log_panel.clone())    as Arc<dyn PanelView>,
+                Arc::new(stats_panel.clone()) as Arc<dyn PanelView>,
             ],
             &weak_dock,
             window,
             cx,
         );
 
-        // Right dock: AI Agent panel (hidden by default; opens on first use).
-        let right = DockItem::tab(ai_panel.clone(), &weak_dock, window, cx);
+        let bottom = DockItem::tab(ai_panel.clone(), &weak_dock, window, cx);
 
         dock_area.update(cx, |dock, cx| {
-            dock.set_left_dock(left_panel, Some(px(220.)), true, window, cx);
+            dock.set_left_dock(left_panel, Some(px(240.)), true, window, cx);
             dock.set_center(center, window, cx);
-            dock.set_bottom_dock(bottom, Some(px(280.)), false, window, cx);
-            dock.set_right_dock(right, Some(px(360.)), false, window, cx);
+            dock.set_right_dock(right, Some(px(400.)), true, window, cx);
+            dock.set_bottom_dock(bottom, Some(px(220.)), true, window, cx);
         });
 
         let events: EventQueue = Arc::new(Mutex::new(VecDeque::new()));
@@ -297,12 +304,7 @@ impl Workspace {
             &deployment_panel,
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
-                this.fetch_resource_yaml("Deployment", &ev.namespace, &ev.name);
-                let ctx = format!("Deployment {}/{}", ev.namespace, ev.name);
-                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
-                if let Some(d) = this.all_deployments.iter().find(|d| d.name == ev.name && d.namespace == ev.namespace).cloned() {
-                    this.show_detail(ResourceDetail::Deployment(d), window, cx);
-                }
+                this.open_resource("Deployment", &ev.namespace, &ev.name, window, cx);
             },
         )
         .detach();
@@ -310,12 +312,7 @@ impl Workspace {
             &service_panel,
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
-                this.fetch_resource_yaml("Service", &ev.namespace, &ev.name);
-                let ctx = format!("Service {}/{}", ev.namespace, ev.name);
-                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
-                if let Some(s) = this.all_services.iter().find(|s| s.name == ev.name && s.namespace == ev.namespace).cloned() {
-                    this.show_detail(ResourceDetail::Service(s), window, cx);
-                }
+                this.open_resource("Service", &ev.namespace, &ev.name, window, cx);
             },
         )
         .detach();
@@ -323,12 +320,7 @@ impl Workspace {
             &configmap_panel,
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
-                this.fetch_resource_yaml("ConfigMap", &ev.namespace, &ev.name);
-                let ctx = format!("ConfigMap {}/{}", ev.namespace, ev.name);
-                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
-                if let Some(c) = this.all_configmaps.iter().find(|c| c.name == ev.name && c.namespace == ev.namespace).cloned() {
-                    this.show_detail(ResourceDetail::ConfigMap(c), window, cx);
-                }
+                this.open_resource("ConfigMap", &ev.namespace, &ev.name, window, cx);
             },
         )
         .detach();
@@ -336,12 +328,7 @@ impl Workspace {
             &node_panel,
             window,
             |this, _, ev: &ResourceSelected, window, cx| {
-                this.fetch_resource_yaml("Node", "", &ev.name);
-                let ctx = format!("Node {}", ev.name);
-                this.ai_panel.update(cx, |p, _| p.set_context(ctx));
-                if let Some(n) = this.all_nodes.iter().find(|n| n.name == ev.name).cloned() {
-                    this.show_detail(ResourceDetail::Node(n), window, cx);
-                }
+                this.open_resource("Node", "", &ev.name, window, cx);
             },
         )
         .detach();
@@ -421,6 +408,16 @@ impl Workspace {
         )
         .detach();
 
+        // ── Subscribe to event-card body clicks → load resource in inspector ──
+        cx.subscribe_in(
+            &event_feed,
+            window,
+            |this, _, event: &EventResourceSelected, window, cx| {
+                this.open_resource(&event.kind, &event.namespace, &event.name, window, cx);
+            },
+        )
+        .detach();
+
         cx.subscribe_in(
             &detail_panel,
             window,
@@ -464,6 +461,7 @@ impl Workspace {
             detail_panel,
             yaml_panel,
             log_panel,
+            stats_panel,
             palette,
             settings_panel,
             ai_panel,
@@ -621,7 +619,7 @@ impl Workspace {
                     panel.set_yaml(title, yaml);
                     cx.notify();
                 });
-                self.ensure_bottom_dock_open(window, cx);
+                self.ensure_right_dock_open(window, cx);
             }
             KubeEvent::ResourceYamlError(msg) => {
                 error!("yaml fetch error: {msg}");
@@ -635,9 +633,6 @@ impl Workspace {
                 error!("log stream error: {msg}");
             }
             KubeEvent::WarningEvent(ev) => {
-                self.health_panel.update(cx, |panel, cx| {
-                    panel.push_warning(ev.clone(), cx);
-                });
                 self.event_feed.update(cx, |feed, cx| {
                     feed.push_event(ev, cx);
                 });
@@ -738,6 +733,7 @@ impl Workspace {
             panel.clear_detail();
             cx.notify();
         });
+        self.stats_panel.update(cx, |p, cx| p.clear(cx));
         self.all_nodes.clear();
         self.yaml_panel.update(cx, |panel, _| panel.clear());
         // Stop log stream and clear log panel.
@@ -935,11 +931,78 @@ impl Workspace {
         });
     }
 
-    fn ensure_bottom_dock_open(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+    fn ensure_right_dock_open(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
             self.dock_area.update(cx, |dock, cx| {
-                dock.toggle_dock(DockPlacement::Bottom, window, cx);
+                dock.toggle_dock(DockPlacement::Right, window, cx);
             });
+        }
+    }
+
+    /// Load the given resource into the inspector (Details + YAML + Stats) and
+    /// open the right dock.  For Pods, also starts log streaming.
+    fn open_resource(
+        &mut self,
+        kind: &str,
+        namespace: &str,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match kind {
+            "Pod" => {
+                self.on_pod_selected(name, namespace, cx);
+            }
+            "Deployment" => {
+                if let Some(d) = self
+                    .all_deployments
+                    .iter()
+                    .find(|d| d.name == name && d.namespace == namespace)
+                    .cloned()
+                {
+                    self.fetch_resource_yaml("Deployment", namespace, name);
+                    let ctx = format!("Deployment {namespace}/{name}");
+                    self.ai_panel.update(cx, |p, _| p.set_context(ctx));
+                    self.show_detail(ResourceDetail::Deployment(d), window, cx);
+                }
+            }
+            "Service" => {
+                if let Some(s) = self
+                    .all_services
+                    .iter()
+                    .find(|s| s.name == name && s.namespace == namespace)
+                    .cloned()
+                {
+                    self.fetch_resource_yaml("Service", namespace, name);
+                    let ctx = format!("Service {namespace}/{name}");
+                    self.ai_panel.update(cx, |p, _| p.set_context(ctx));
+                    self.show_detail(ResourceDetail::Service(s), window, cx);
+                }
+            }
+            "ConfigMap" => {
+                if let Some(c) = self
+                    .all_configmaps
+                    .iter()
+                    .find(|c| c.name == name && c.namespace == namespace)
+                    .cloned()
+                {
+                    self.fetch_resource_yaml("ConfigMap", namespace, name);
+                    let ctx = format!("ConfigMap {namespace}/{name}");
+                    self.ai_panel.update(cx, |p, _| p.set_context(ctx));
+                    self.show_detail(ResourceDetail::ConfigMap(c), window, cx);
+                }
+            }
+            "Node" => {
+                if let Some(n) = self.all_nodes.iter().find(|n| n.name == name).cloned() {
+                    self.fetch_resource_yaml("Node", "", name);
+                    let ctx = format!("Node {name}");
+                    self.ai_panel.update(cx, |p, _| p.set_context(ctx));
+                    self.show_detail(ResourceDetail::Node(n), window, cx);
+                }
+            }
+            _ => {
+                self.fetch_resource_yaml(kind, namespace, name);
+            }
         }
     }
 
@@ -996,18 +1059,24 @@ impl Workspace {
                 }
             }
         });
-
-        // Open the right dock if it's closed.
-        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
-            self.dock_area.update(cx, |dock, cx| {
-                dock.toggle_dock(DockPlacement::Right, window, cx);
-            });
-        }
     }
 
     fn show_detail(&mut self, detail: ResourceDetail, window: &mut Window, cx: &mut Context<Self>) {
-        self.detail_panel.update(cx, |p, cx| { p.set_detail(detail); cx.notify(); });
-        self.ensure_bottom_dock_open(window, cx);
+        let is_pod = matches!(detail, ResourceDetail::Pod(_));
+        self.stats_panel
+            .update(cx, |p, cx| p.set_detail(Some(detail.clone()), cx));
+        self.detail_panel
+            .update(cx, |p, cx| { p.set_detail(detail); cx.notify(); });
+        // Non-pods can't stream logs — reset the log panel to its empty state
+        // so the "Logs available when a Pod is selected" message shows.
+        if !is_pod {
+            self.log_abort.store(true, Ordering::SeqCst);
+            self.log_abort = Arc::new(AtomicBool::new(false));
+            self.active_log_pod = None;
+            self.active_log_ns = None;
+            self.log_panel.update(cx, |p, cx| p.set_no_pod(cx));
+        }
+        self.ensure_right_dock_open(window, cx);
     }
 
     /// Build the system prompt: SRE base + live cluster context appended.
@@ -1164,12 +1233,6 @@ impl Workspace {
                 }
             }
         });
-
-        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Right, cx) {
-            self.dock_area.update(cx, |dock, cx| {
-                dock.toggle_dock(DockPlacement::Right, window, cx);
-            });
-        }
     }
 
     /// Push the namespace-filtered pod list to the panel (which re-applies search filters).

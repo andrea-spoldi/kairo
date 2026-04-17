@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use gpui::*;
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
-use kairo_core::models::{ClusterEvent, PodSummary};
+use kairo_core::models::PodSummary;
 
 use crate::components::resource_list::{ResourceCounts, render_resource_tree};
 
@@ -13,8 +13,6 @@ use crate::theme::{
     BORDER, HOVER_BG, SELECTED_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING,
     SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
-
-const MAX_WARNINGS: usize = 12;
 
 /// Emitted when the user clicks a namespace row in the sidebar.
 #[derive(Clone)]
@@ -32,12 +30,12 @@ struct PodCounts {
     total: usize,
 }
 
-/// Left sidebar panel — cluster health overview (pod counts + resource counts + namespace tree + recent warnings).
+/// Left sidebar panel — compact cluster health overview (pod counts +
+/// resource counts + namespace tree). Warning events live in the center feed.
 pub struct ClusterHealthPanel {
     focus_handle: FocusHandle,
     cluster: PodCounts,
     namespaces: BTreeMap<String, PodCounts>,
-    warnings: VecDeque<ClusterEvent>,
     active_namespace: SharedString,
     pub resource_counts: ResourceCounts,
 }
@@ -48,7 +46,6 @@ impl ClusterHealthPanel {
             focus_handle: cx.focus_handle(),
             cluster: PodCounts::default(),
             namespaces: BTreeMap::new(),
-            warnings: VecDeque::new(),
             active_namespace: SharedString::from("All"),
             resource_counts: ResourceCounts::default(),
         }
@@ -83,26 +80,16 @@ impl ClusterHealthPanel {
         cx.notify();
     }
 
-    /// Add a warning event to the recent list (newest first, capped at MAX_WARNINGS).
-    pub fn push_warning(&mut self, ev: ClusterEvent, cx: &mut Context<Self>) {
-        self.warnings.push_front(ev);
-        if self.warnings.len() > MAX_WARNINGS {
-            self.warnings.pop_back();
-        }
-        cx.notify();
-    }
-
     /// Update the highlighted active namespace (driven by external namespace selection).
     pub fn set_active_namespace(&mut self, ns: SharedString, cx: &mut Context<Self>) {
         self.active_namespace = ns;
         cx.notify();
     }
 
-    /// Reset all counts and warnings (e.g. on context switch).
+    /// Reset all counts (e.g. on context switch).
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.cluster = PodCounts::default();
         self.namespaces.clear();
-        self.warnings.clear();
         self.resource_counts = ResourceCounts::default();
         cx.notify();
     }
@@ -231,9 +218,6 @@ impl Render for ClusterHealthPanel {
             ns_section = ns_section.child(row);
         }
 
-        // ── Recent warnings ───────────────────────────────────────────────────
-        let warnings_section = render_warnings_section(&self.warnings);
-
         let resource_tree = render_resource_tree(&self.resource_counts);
 
         // ── Assemble ──────────────────────────────────────────────────────────
@@ -247,7 +231,6 @@ impl Render for ClusterHealthPanel {
             .child(counts)
             .child(resource_tree)
             .child(ns_section)
-            .child(warnings_section)
     }
 }
 
@@ -333,62 +316,5 @@ fn render_ns_row_content(name: &str, counts: &PodCounts, selected: bool) -> impl
                         .text_color(TEXT_MUTED),
                 ),
         )
-}
-
-fn render_warnings_section(warnings: &VecDeque<ClusterEvent>) -> AnyElement {
-    let mut section = div()
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .child(
-            Label::new("Recent Warnings")
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(TEXT_HEADING),
-        );
-
-    if warnings.is_empty() {
-        section = section.child(
-            Label::new("  No warnings")
-                .text_sm()
-                .text_color(TEXT_MUTED),
-        );
-    } else {
-        for ev in warnings {
-            section = section.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .px_2()
-                    .py_1()
-                    .rounded(px(4.))
-                    .border_l_2()
-                    .border_color(STATUS_FAILED)
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(
-                                Label::new(ev.reason.clone())
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(STATUS_FAILED),
-                            )
-                            .child(
-                                Label::new(ev.object_name.clone())
-                                    .text_sm()
-                                    .text_color(TEXT_SECONDARY),
-                            ),
-                    )
-                    .child(
-                        Label::new(ev.message.clone())
-                            .text_sm()
-                            .text_color(TEXT_MUTED),
-                    ),
-            );
-        }
-    }
-
-    section.into_any_element()
 }
 
