@@ -17,7 +17,40 @@ use actions::{
     OpenCommandPalette, OpenSettings, ToggleGrouping, YankName,
 };
 
+/// macOS app bundles (and Linux .desktop launchers) don't inherit the user's
+/// login-shell PATH. Kubeconfig exec-credential plugins (aws-iam-authenticator,
+/// gke-gcloud-auth-plugin, kubelogin, …) live in Homebrew/user-local dirs that
+/// are absent from the system PATH. Spawn a login shell once at startup to
+/// capture its PATH and apply it to the process environment.
+fn fix_exec_path() {
+    if let Ok(shell) = std::env::var("SHELL") {
+        if let Ok(out) = std::process::Command::new(&shell)
+            .args(["-l", "-c", "echo $PATH"])
+            .output()
+        {
+            if out.status.success() {
+                let path = String::from_utf8_lossy(&out.stdout);
+                let path = path.trim();
+                if !path.is_empty() {
+                    std::env::set_var("PATH", path);
+                    return;
+                }
+            }
+        }
+    }
+    // Fallback: prepend the most common Homebrew / user-local locations.
+    let cur = std::env::var("PATH").unwrap_or_default();
+    std::env::set_var(
+        "PATH",
+        format!("/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:{cur}"),
+    );
+}
+
 fn main() {
+    // Must run before kube_runtime::init() so exec credential plugins are
+    // resolvable inside the tokio runtime's spawned tasks.
+    fix_exec_path();
+
     tracing_subscriber::fmt::init();
 
     // Initialise the dedicated tokio runtime for kube-rs operations.

@@ -4,7 +4,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gpui::{prelude::FluentBuilder, *};
@@ -14,6 +14,7 @@ use gpui_component::{
     h_flex,
     label::Label,
     select::{Select, SelectEvent, SelectState},
+    tooltip::Tooltip,
 };
 use kairo_core::{
     ClusterEvent, ConfigMapSummary, DeploymentSummary, GenericResourceDetail, KubeClient,
@@ -101,6 +102,49 @@ enum KubeEvent {
 
 type EventQueue = Arc<Mutex<VecDeque<KubeEvent>>>;
 
+// ── Internal status alerts ─────────────────────────────────────────────────────
+
+#[derive(Clone)]
+enum AlertLevel { Info, Warning, Error }
+
+#[derive(Clone)]
+struct StatusAlert {
+    level: AlertLevel,
+    msg: String,
+    shown_at: Instant,
+}
+
+impl StatusAlert {
+    fn new(level: AlertLevel, msg: impl Into<String>) -> Self {
+        Self { level, msg: msg.into(), shown_at: Instant::now() }
+    }
+
+    fn color(&self) -> Hsla {
+        match self.level {
+            AlertLevel::Info    => STATUS_RUNNING,
+            AlertLevel::Warning => STATUS_PENDING,
+            AlertLevel::Error   => STATUS_FAILED,
+        }
+    }
+
+    fn icon(&self) -> &'static str {
+        match self.level {
+            AlertLevel::Info    => "✓",
+            AlertLevel::Warning => "⚠",
+            AlertLevel::Error   => "✖",
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        let ttl = match self.level {
+            AlertLevel::Info    => Duration::from_secs(5),
+            AlertLevel::Warning => Duration::from_secs(12),
+            AlertLevel::Error   => Duration::from_secs(20),
+        };
+        self.shown_at.elapsed() > ttl
+    }
+}
+
 // ── Workspace ─────────────────────────────────────────────────────────────────
 
 /// Root view: title bar + dock area + status bar.
@@ -154,11 +198,14 @@ pub struct Workspace {
     active_log_ns: Option<String>,
     /// GPUI task that polls `events` on a timer; kept alive by storing it.
     _poll_task: Task<()>,
+    /// Latest internal alert shown in the status bar (auto-cleared after TTL).
+    status_alert: Option<StatusAlert>,
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // ── Load kubeconfig contexts synchronously ────────────────────────────
+        let mut init_error: Option<String> = None;
         let (contexts, current_ctx) = match KubeClient::list_contexts() {
             Ok(names) => {
                 let current = KubeClient::current_context().ok().flatten();
@@ -169,6 +216,7 @@ impl Workspace {
             }
             Err(e) => {
                 error!("failed to read kubeconfig: {e}");
+                init_error = Some(e.to_string());
                 (Vec::new(), None)
             }
         };
@@ -494,11 +542,20 @@ impl Workspace {
             active_log_pod: None,
             active_log_ns: None,
             _poll_task: poll_task,
+            status_alert: None,
         };
 
         // Connect to the current context
         if let Some(ctx) = current_ctx {
             ws.switch_context(ctx.to_string(), window, cx);
+        }
+
+        // Surface kubeconfig load errors immediately in the status bar.
+        if let Some(err) = init_error {
+            ws.status_alert = Some(StatusAlert::new(
+                AlertLevel::Error,
+                format!("Kubeconfig: {err}"),
+            ));
         }
 
         // Attempt MCP connection if enabled in config.
@@ -523,13 +580,14 @@ impl Workspace {
                 let mut q = events.lock().unwrap();
                 q.drain(..).collect()
             };
-            if batch.is_empty() {
-                continue;
-            }
             let keep_going = weak_ws
                 .update_in(cx, |this, window, cx| {
                     for ev in batch {
                         this.handle_kube_event(ev, window, cx);
+                    }
+                    if this.status_alert.as_ref().map(|a| a.is_expired()).unwrap_or(false) {
+                        this.status_alert = None;
+                        cx.notify();
                     }
                 })
                 .is_ok();
@@ -548,7 +606,12 @@ impl Workspace {
         match event {
             KubeEvent::Connected(client) => {
                 info!("connected to context: {}", client.context);
+                let ctx = client.context.clone();
                 self.kube_client = Some(client);
+                self.status_alert = Some(StatusAlert::new(
+                    AlertLevel::Info,
+                    format!("Connected: {ctx}"),
+                ));
                 cx.notify();
             }
             KubeEvent::Namespace(ns) => {
@@ -643,6 +706,11 @@ impl Workspace {
             }
             KubeEvent::LogError(msg) => {
                 error!("log stream error: {msg}");
+                self.status_alert = Some(StatusAlert::new(
+                    AlertLevel::Warning,
+                    format!("Log error: {msg}"),
+                ));
+                cx.notify();
             }
             KubeEvent::WarningEvent(ev) => {
                 self.event_feed.update(cx, |feed, cx| {
@@ -651,6 +719,8 @@ impl Workspace {
             }
             KubeEvent::Error(msg) => {
                 error!("kube error: {msg}");
+                self.status_alert = Some(StatusAlert::new(AlertLevel::Error, msg));
+                cx.notify();
             }
             KubeEvent::AiToken(token) => {
                 self.ai_panel.update(cx, |panel, cx| panel.push_token(&token, cx));
@@ -661,6 +731,11 @@ impl Workspace {
             KubeEvent::AiError(msg) => {
                 error!("ai error: {msg}");
                 self.ai_panel.update(cx, |panel, cx| panel.set_error(&msg, cx));
+                self.status_alert = Some(StatusAlert::new(
+                    AlertLevel::Warning,
+                    format!("AI: {msg}"),
+                ));
+                cx.notify();
             }
             KubeEvent::McpReady(client, tools) => {
                 info!("MCP connected — {} tool(s) available", tools.len());
@@ -1429,7 +1504,7 @@ impl Render for Workspace {
                     ),
             )
             .child(div().flex_1().min_h_0().child(self.dock_area.clone()))
-            .child(render_status_bar(&ctx_name, &ns_name, running, pending, failed, total))
+            .child(render_status_bar(&ctx_name, &ns_name, running, pending, failed, total, self.status_alert.as_ref()))
             .children(gpui_component::Root::render_sheet_layer(_window, cx))
             .children(gpui_component::Root::render_dialog_layer(_window, cx))
             .children(gpui_component::Root::render_notification_layer(_window, cx))
@@ -1451,6 +1526,7 @@ fn render_status_bar(
     pending: usize,
     failed: usize,
     total: usize,
+    alert: Option<&StatusAlert>,
 ) -> impl IntoElement {
     h_flex()
         .h(px(22.))
@@ -1464,6 +1540,27 @@ fn render_status_bar(
         .child(Label::new("│").text_sm().text_color(TEXT_MUTED))
         .child(Label::new(namespace.to_string()).text_sm().text_color(TEXT_SECONDARY))
         .child(div().flex_1())
+        .when_some(alert, |el, a| {
+            let full = a.msg.clone();
+            let char_count = a.msg.chars().count();
+            let display = if char_count > 55 {
+                let t: String = a.msg.chars().take(52).collect();
+                format!("{} {t}…", a.icon())
+            } else {
+                format!("{} {}", a.icon(), a.msg)
+            };
+            let color = a.color();
+            el.child(
+                div()
+                    .id("status-alert")
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+                    .child(Label::new(display).text_sm().text_color(color)),
+            )
+            .child(Label::new("│").text_sm().text_color(TEXT_MUTED))
+        })
         .child(Label::new(format!("● {running}")).text_sm().text_color(STATUS_RUNNING))
         .child(Label::new(format!("◐ {pending}")).text_sm().text_color(STATUS_PENDING))
         .child(Label::new(format!("✖ {failed}")).text_sm().text_color(STATUS_FAILED))
