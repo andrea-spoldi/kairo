@@ -3,6 +3,7 @@ use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::text::TextView;
 use kairo_core::{
     fmt_cpu, fmt_memory,
     models::{
@@ -367,7 +368,7 @@ fn render_pod_events(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyEl
         let pod_ns = detail.summary.namespace.clone();
         let pod_status = detail.summary.status.clone();
 
-        for ev in &detail.events {
+        for (i, ev) in detail.events.iter().enumerate() {
             let type_color = if ev.event_type == "Warning" { STATUS_FAILED } else { TEXT_SECONDARY };
             let json = serde_json::json!({
                 "pod": format!("{pod_ns}/{pod_name}"),
@@ -430,7 +431,13 @@ fn render_pod_events(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyEl
                                     .child(Label::new("⬡ Analyze").text_xs().text_color(ACCENT)),
                             ),
                     )
-                    .child(Label::new(ev.message.clone()).text_sm().text_color(TEXT_SECONDARY)),
+                    .child(
+                        TextView::markdown(
+                            SharedString::from(format!("ev-msg-{i}")),
+                            SharedString::from(ev.message.clone()),
+                        )
+                        .selectable(true),
+                    ),
             );
         }
     }
