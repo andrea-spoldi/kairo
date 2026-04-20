@@ -432,6 +432,150 @@ fn confidence_color(level: &str) -> Hsla {
     }
 }
 
+// ── Content segments ───────────────────────────────────────────────────────────
+
+enum Segment {
+    Plain(String),
+    CodeBlock { lang: String, body: String },
+}
+
+/// Parse assistant content into alternating plain-text and code-block segments.
+fn parse_content(content: &str) -> Vec<Segment> {
+    let mut segments = Vec::new();
+    let mut remaining = content;
+
+    loop {
+        match remaining.find("```") {
+            None => {
+                if !remaining.is_empty() {
+                    segments.push(Segment::Plain(remaining.to_string()));
+                }
+                break;
+            }
+            Some(fence_start) => {
+                if fence_start > 0 {
+                    segments.push(Segment::Plain(remaining[..fence_start].to_string()));
+                }
+                let after_fence = &remaining[fence_start + 3..];
+                let lang_end = after_fence.find('\n').unwrap_or(after_fence.len());
+                let lang = after_fence[..lang_end].trim().to_string();
+                let body_start = lang_end + if lang_end < after_fence.len() { 1 } else { 0 };
+                let body_text = &after_fence[body_start..];
+                match body_text.find("```") {
+                    None => {
+                        segments.push(Segment::CodeBlock { lang, body: body_text.to_string() });
+                        break;
+                    }
+                    Some(close) => {
+                        segments.push(Segment::CodeBlock {
+                            lang,
+                            body: body_text[..close].to_string(),
+                        });
+                        let after_close = &body_text[close + 3..];
+                        remaining = after_close.strip_prefix('\n').unwrap_or(after_close);
+                    }
+                }
+            }
+        }
+    }
+
+    segments
+}
+
+/// Render plain text with proper line-break support.
+fn render_text_block(text: &str) -> AnyElement {
+    let mut col = div().flex().flex_col().gap(px(2.));
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            col = col.child(div().h(px(5.)));
+        } else {
+            col = col.child(
+                div()
+                    .text_sm()
+                    .text_color(TEXT_PRIMARY)
+                    .child(SharedString::from(line.to_string())),
+            );
+        }
+    }
+    col.into_any_element()
+}
+
+/// Render a fenced code block with a header bar (language label + copy icon).
+fn render_code_block_segment(lang: &str, body: &str) -> AnyElement {
+    let body_trimmed = body.trim_end_matches('\n').to_string();
+    let lang_label = if lang.is_empty() { "code" } else { lang }.to_string();
+    let body_copy = body_trimmed.clone();
+
+    let mut code_col = div().flex().flex_col();
+    for line in body_trimmed.split('\n') {
+        code_col = code_col.child(
+            div()
+                .font_family("Zed Mono")
+                .text_xs()
+                .text_color(TEXT_SECONDARY)
+                .whitespace_nowrap()
+                .child(if line.is_empty() { " ".to_string() } else { line.to_string() }),
+        );
+    }
+
+    div()
+        .w_full()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(BORDER)
+        .bg(rgba(0x11111BFF))
+        .flex()
+        .flex_col()
+        .child(
+            h_flex()
+                .px(px(10.))
+                .py(px(4.))
+                .border_b_1()
+                .border_color(BORDER)
+                .child(
+                    Label::new(lang_label)
+                        .text_xs()
+                        .font_family("Zed Mono")
+                        .text_color(TEXT_MUTED),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .cursor_pointer()
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded(px(3.))
+                        .text_xs()
+                        .text_color(TEXT_MUTED)
+                        .hover(|s| s.text_color(TEXT_PRIMARY).bg(HOVER_BG))
+                        .child("⎘")
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(body_copy.clone()));
+                        }),
+                ),
+        )
+        .child(div().px(px(10.)).py(px(8.)).child(code_col))
+        .into_any_element()
+}
+
+/// Render assistant content with code-block detection, line breaks, and inline copy.
+fn render_rich_content(content: &str) -> AnyElement {
+    let segments = parse_content(content);
+    let mut col = div().flex().flex_col().gap(px(8.));
+    for seg in segments {
+        match seg {
+            Segment::Plain(text) if !text.trim().is_empty() => {
+                col = col.child(render_text_block(&text));
+            }
+            Segment::CodeBlock { lang, body } => {
+                col = col.child(render_code_block_segment(&lang, &body));
+            }
+            _ => {}
+        }
+    }
+    col.into_any_element()
+}
+
 // ── Entry renderers ────────────────────────────────────────────────────────────
 
 fn render_entry(entry: ChatEntry) -> impl IntoElement {
@@ -458,6 +602,7 @@ fn render_entry(entry: ChatEntry) -> impl IntoElement {
     };
 
     if align_right {
+        let content_copy = entry.content.clone();
         div()
             .flex()
             .flex_col()
@@ -476,6 +621,7 @@ fn render_entry(entry: ChatEntry) -> impl IntoElement {
                     .text_color(TEXT_PRIMARY)
                     .child(SharedString::from(entry.content)),
             )
+            .child(copy_chip_button(content_copy))
             .into_any_element()
     } else if entry.role == AiRole::Assistant {
         // Try structured rendering for analysis responses.
@@ -488,7 +634,24 @@ fn render_entry(entry: ChatEntry) -> impl IntoElement {
     }
 }
 
+/// Small inline copy chip used on message bubbles — plain closure, no cx.listener needed.
+fn copy_chip_button(text: String) -> impl IntoElement {
+    div()
+        .cursor_pointer()
+        .px(px(5.))
+        .py(px(1.))
+        .rounded(px(3.))
+        .text_xs()
+        .text_color(TEXT_MUTED)
+        .hover(|s| s.text_color(TEXT_PRIMARY).bg(HOVER_BG))
+        .child("⎘")
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        })
+}
+
 fn render_plain_assistant(content: &str) -> AnyElement {
+    let content_copy = content.to_string();
     div()
         .flex()
         .flex_col()
@@ -502,10 +665,9 @@ fn render_plain_assistant(content: &str) -> AnyElement {
                 .py(px(7.))
                 .rounded(px(8.))
                 .rounded_tl(px(2.))
-                .text_sm()
-                .text_color(TEXT_PRIMARY)
-                .child(SharedString::from(content.to_string())),
+                .child(render_rich_content(content)),
         )
+        .child(copy_chip_button(content_copy))
         .into_any_element()
 }
 
@@ -646,7 +808,8 @@ fn render_streaming_entry(buf: String) -> impl IntoElement {
                     .text_sm()
                     .text_color(STATUS_PENDING)
                     .child(SharedString::from("Analyzing situation… ▊")),
-            );
+            )
+            .into_any_element();
     }
 
     let display = if buf.is_empty() {
@@ -668,10 +831,9 @@ fn render_streaming_entry(buf: String) -> impl IntoElement {
                 .py(px(7.))
                 .rounded(px(8.))
                 .rounded_tl(px(2.))
-                .text_sm()
-                .text_color(TEXT_PRIMARY)
-                .child(SharedString::from(display)),
+                .child(render_rich_content(&display)),
         )
+        .into_any_element()
 }
 
 fn render_empty_state() -> impl IntoElement {

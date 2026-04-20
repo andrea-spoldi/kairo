@@ -17,6 +17,28 @@ use crate::theme::{
     STATUS_RUNNING, SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
+/// Small inline chip that copies `value` to the clipboard on click.
+fn copy_chip(
+    id: impl Into<ElementId>,
+    value: impl Into<String>,
+    cx: &mut Context<DetailPanel>,
+) -> impl IntoElement {
+    let value = value.into();
+    div()
+        .id(id.into())
+        .px(px(5.))
+        .py(px(1.))
+        .rounded(px(3.))
+        .cursor_pointer()
+        .text_xs()
+        .text_color(TEXT_MUTED)
+        .hover(|s| s.text_color(TEXT_PRIMARY).bg(HOVER_BG))
+        .child("⎘")
+        .on_click(cx.listener(move |_, _: &ClickEvent, _window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+        }))
+}
+
 // ── ResourceDetail ────────────────────────────────────────────────────────────
 
 /// The detail content currently shown in the Details panel.
@@ -220,6 +242,9 @@ fn name_header(name: &str, kind: &str, namespace: &str, age: &str) -> Div {
 
 fn render_pod(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyElement {
     let s = &detail.summary;
+    let name = s.name.clone();
+    let namespace = s.namespace.clone();
+    let node = s.node.clone();
 
     div()
         .flex()
@@ -234,16 +259,27 @@ fn render_pod(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyElement {
                         .child(Label::new(format!("node: {}", s.node)).text_sm().text_color(TEXT_SECONDARY))
                         .child(Label::new(format!("ready: {}", s.ready)).text_sm().text_color(TEXT_SECONDARY))
                         .child(Label::new(format!("restarts: {}", s.restarts)).text_sm().text_color(TEXT_SECONDARY)),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(copy_chip("pod-copy-name", name, cx))
+                        .child(copy_chip("pod-copy-ns", namespace, cx))
+                        .child(copy_chip("pod-copy-node", node, cx)),
                 ),
         )
-        .child(render_kv_section("Labels", &detail.labels))
-        .child(render_kv_section("Annotations", &detail.annotations))
+        .child(render_kv_section("Labels", &detail.labels, cx))
+        .child(render_kv_section("Annotations", &detail.annotations, cx))
         .child(render_pod_containers(detail))
         .child(render_pod_events(detail, cx))
         .into_any_element()
 }
 
-fn render_kv_section(title: &str, map: &std::collections::BTreeMap<String, String>) -> AnyElement {
+fn render_kv_section(
+    title: &str,
+    map: &std::collections::BTreeMap<String, String>,
+    cx: &mut Context<DetailPanel>,
+) -> AnyElement {
     let mut section = div()
         .flex()
         .flex_col()
@@ -254,10 +290,17 @@ fn render_kv_section(title: &str, map: &std::collections::BTreeMap<String, Strin
         section = section.child(Label::new("  (none)").text_sm().text_color(TEXT_MUTED));
     } else {
         for (k, v) in map {
+            let kv = format!("{k}={v}");
+            let chip_id = SharedString::from(format!("copy-{title}-{k}"));
             section = section.child(
-                Label::new(format!("  {k}={v}"))
-                    .text_sm()
-                    .text_color(TEXT_SECONDARY),
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Label::new(format!("  {kv}"))
+                            .text_sm()
+                            .text_color(TEXT_SECONDARY),
+                    )
+                    .child(copy_chip(chip_id, kv, cx)),
             );
         }
     }

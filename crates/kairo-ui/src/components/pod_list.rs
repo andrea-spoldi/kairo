@@ -10,7 +10,7 @@ use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::table::{Column, DataTable, TableDelegate, TableEvent, TableState};
 use kairo_core::models::PodSummary;
 
-use crate::actions::{ConfirmSelection, FocusSearch, NavigateDown, NavigateUp, ToggleGrouping};
+use crate::actions::{ConfirmSelection, FocusSearch, NavigateDown, NavigateUp, ToggleGrouping, YankName};
 use crate::theme::{
     status_color, status_symbol, BORDER, SELECTED_BG, SURFACE, TEXT_HEADING, TEXT_MUTED,
     TEXT_PRIMARY, TEXT_SECONDARY,
@@ -475,6 +475,14 @@ impl PodListPanel {
         self.apply_filters(cx);
     }
 
+    fn yank_selected_name(&mut self, _: &YankName, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pod_ix) = self.cursor {
+            if let Some(pod) = self.table.read(cx).delegate().pods.get(pod_ix) {
+                cx.write_to_clipboard(ClipboardItem::new_string(pod.name.clone()));
+            }
+        }
+    }
+
     fn set_cursor(&mut self, pod_ix: usize, cx: &mut Context<Self>) {
         self.cursor = Some(pod_ix);
 
@@ -555,6 +563,7 @@ impl Render for PodListPanel {
             .on_action(cx.listener(Self::confirm_selection))
             .on_action(cx.listener(Self::focus_search))
             .on_action(cx.listener(Self::toggle_grouping))
+            .on_action(cx.listener(Self::yank_selected_name))
             .size_full()
             .flex()
             .flex_col()

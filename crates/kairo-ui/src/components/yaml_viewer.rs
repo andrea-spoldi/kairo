@@ -1,4 +1,7 @@
+use std::time::Duration;
+
 use gpui::*;
+use gpui_component::button::Button;
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
@@ -30,6 +33,8 @@ pub struct YamlViewerPanel {
     pub resource_title: String,
     /// Raw YAML string (None = nothing selected yet).
     pub yaml: Option<String>,
+    /// True for 1.5 s after the user clicks "Copy YAML".
+    copied_flash: bool,
 }
 
 impl YamlViewerPanel {
@@ -38,6 +43,7 @@ impl YamlViewerPanel {
             focus_handle: cx.focus_handle(),
             resource_title: String::new(),
             yaml: None,
+            copied_flash: false,
         }
     }
 
@@ -49,6 +55,21 @@ impl YamlViewerPanel {
     pub fn clear(&mut self) {
         self.resource_title.clear();
         self.yaml = None;
+    }
+
+    fn trigger_copy_flash(&mut self, cx: &mut Context<Self>) {
+        self.copied_flash = true;
+        cx.notify();
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<YamlViewerPanel>, cx| {
+            executor.timer(Duration::from_millis(1500)).await;
+            this.update(cx, |panel: &mut YamlViewerPanel, cx| {
+                panel.copied_flash = false;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 }
 
@@ -66,7 +87,7 @@ impl Panel for YamlViewerPanel {
 }
 
 impl Render for YamlViewerPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(yaml) = self.yaml.clone() else {
             return div()
                 .size_full()
@@ -77,6 +98,8 @@ impl Render for YamlViewerPanel {
                 .child("Select a resource to view its YAML")
                 .into_any_element();
         };
+
+        let copied = self.copied_flash;
 
         div()
             .size_full()
@@ -96,6 +119,18 @@ impl Render for YamlViewerPanel {
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(TEXT_HEADING),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("copy-yaml")
+                            .label(if copied { "Copied!" } else { "Copy YAML" })
+                            .compact()
+                            .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                if let Some(yaml) = &this.yaml {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(yaml.clone()));
+                                    this.trigger_copy_flash(cx);
+                                }
+                            })),
                     ),
             )
             // Scrollable YAML body

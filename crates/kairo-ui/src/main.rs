@@ -14,7 +14,7 @@ use gpui_component_assets::Assets;
 
 use actions::{
     CloseCommandPalette, ConfirmSelection, FocusSearch, NavigateDown, NavigateUp,
-    OpenCommandPalette, OpenSettings, ToggleGrouping,
+    OpenCommandPalette, OpenSettings, ToggleGrouping, YankName,
 };
 
 fn main() {
@@ -58,6 +58,7 @@ fn main() {
                 KeyBinding::new("return", ConfirmSelection,  Some("PodList && !Input")),
                 KeyBinding::new("/",      FocusSearch,       Some("PodList && !Input")),
                 KeyBinding::new("g",      ToggleGrouping,    Some("PodList && !Input")),
+                KeyBinding::new("y",      YankName,          Some("PodList && !Input")),
             ]);
 
             // Palette navigation (fires only when Palette key context is focused).
