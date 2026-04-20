@@ -8,7 +8,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.8.0"
+version = "0.9.0"
 authors = ["Andrea Spoldi"]
 description = "Native Rust Kubernetes IDE — GPUI + kube-rs, no Electron"
 homepage = "https://github.com/andrea-spoldi/kubescope_"
