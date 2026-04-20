@@ -116,21 +116,9 @@ fn waiting_reason(state: &Option<ContainerState>) -> Option<String> {
 /// Produce a human-readable age string from the pod's creation timestamp.
 fn human_age(pod: &Pod) -> String {
     // k8s-openapi 0.27 uses jiff::Timestamp; extract Unix epoch seconds via as_second().
-    let created_unix = match pod.metadata.creation_timestamp.as_ref() {
-        Some(t) => t.0.as_second(),
-        None => return "?".to_string(),
-    };
-    let now_unix = Utc::now().timestamp();
-    let secs = (now_unix - created_unix).max(0);
-
-    if secs < 60 {
-        format!("{}s", secs)
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h", secs / 3600)
-    } else {
-        format!("{}d", secs / 86400)
+    match pod.metadata.creation_timestamp.as_ref() {
+        Some(t) => fmt_age_secs(Utc::now().timestamp() - t.0.as_second()),
+        None => "?".to_string(),
     }
 }
 
@@ -315,14 +303,167 @@ impl From<K8sEvent> for ClusterEvent {
     }
 }
 
+// ── GenericResourceDetail ────────────────────────────────────────────────────
+
+/// Minimal detail view for any Kubernetes resource kind — used as the fallback
+/// when no typed renderer exists (ReplicaSet, Job, Ingress, PVC, HPA, …) or
+/// when a typed fetch has failed (resource deleted / forbidden).
+#[derive(Debug, Clone)]
+pub struct GenericResourceDetail {
+    pub kind: String,
+    /// Empty string for cluster-scoped resources.
+    pub namespace: String,
+    pub name: String,
+    pub age: Option<String>,
+    /// One-line human-readable status (e.g. "Active", "3/3 ready", "Complete").
+    pub status_summary: Option<String>,
+    /// Human-readable error. When `Some`, the renderer surfaces a "resource
+    /// unavailable" card instead of the normal fields.
+    pub error: Option<String>,
+    /// True for the placeholder shown before the async fetch lands.
+    pub loading: bool,
+}
+
+impl GenericResourceDetail {
+    /// Placeholder shown immediately on click, before the YAML fetch lands.
+    pub fn loading(kind: &str, namespace: &str, name: &str) -> Self {
+        Self {
+            kind: kind.to_string(),
+            namespace: namespace.to_string(),
+            name: name.to_string(),
+            age: None,
+            status_summary: None,
+            error: None,
+            loading: true,
+        }
+    }
+
+    /// Unavailable placeholder — shown when the fetch errored out.
+    pub fn unavailable(kind: &str, namespace: &str, name: &str, reason: String) -> Self {
+        Self {
+            kind: kind.to_string(),
+            namespace: namespace.to_string(),
+            name: name.to_string(),
+            age: None,
+            status_summary: None,
+            error: Some(reason),
+            loading: false,
+        }
+    }
+
+    /// Populate from a parsed JSON value (typically serde_yaml → serde_json value
+    /// of a DynamicObject manifest). Extracts `metadata.creationTimestamp` → age
+    /// and derives a kind-appropriate `status_summary` from `.status`.
+    pub fn from_manifest(kind: &str, namespace: &str, name: &str, manifest: &serde_json::Value) -> Self {
+        let age = manifest
+            .get("metadata")
+            .and_then(|m| m.get("creationTimestamp"))
+            .and_then(|t| t.as_str())
+            .map(age_from_rfc3339);
+        let status_summary = status_summary_from_manifest(kind, manifest);
+
+        Self {
+            kind: kind.to_string(),
+            namespace: namespace.to_string(),
+            name: name.to_string(),
+            age,
+            status_summary,
+            error: None,
+            loading: false,
+        }
+    }
+}
+
+/// Derive a one-line status summary from a resource manifest's `.status` field.
+///
+/// Handles common kinds inline; falls back to `status.phase`, a single `Ready`
+/// condition, or `None` when nothing useful is present.
+fn status_summary_from_manifest(kind: &str, v: &serde_json::Value) -> Option<String> {
+    let status = v.get("status")?;
+
+    match kind {
+        "ReplicaSet" | "StatefulSet" | "DaemonSet" => {
+            let ready = status.get("readyReplicas").and_then(|x| x.as_i64()).unwrap_or(0);
+            let desired = v.get("spec")
+                .and_then(|s| s.get("replicas"))
+                .and_then(|x| x.as_i64())
+                .or_else(|| status.get("replicas").and_then(|x| x.as_i64()))
+                .unwrap_or(0);
+            Some(format!("{ready}/{desired} ready"))
+        }
+        "Job" => {
+            let succeeded = status.get("succeeded").and_then(|x| x.as_i64()).unwrap_or(0);
+            let failed = status.get("failed").and_then(|x| x.as_i64()).unwrap_or(0);
+            let active = status.get("active").and_then(|x| x.as_i64()).unwrap_or(0);
+            if succeeded > 0 && active == 0 && failed == 0 {
+                Some("Complete".to_string())
+            } else if failed > 0 {
+                Some(format!("Failed ({failed})"))
+            } else if active > 0 {
+                Some(format!("Active ({active})"))
+            } else {
+                None
+            }
+        }
+        "CronJob" => {
+            let active = status.get("active").and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0);
+            let last = status.get("lastScheduleTime").and_then(|t| t.as_str()).unwrap_or("-");
+            Some(format!("active: {active} | last: {last}"))
+        }
+        "PersistentVolumeClaim" | "PersistentVolume" => {
+            status.get("phase").and_then(|p| p.as_str()).map(String::from)
+        }
+        "Ingress" => {
+            let ingress = status.get("loadBalancer").and_then(|lb| lb.get("ingress")).and_then(|i| i.as_array());
+            match ingress {
+                Some(list) if !list.is_empty() => {
+                    let addrs: Vec<String> = list
+                        .iter()
+                        .filter_map(|e| e.get("hostname").and_then(|h| h.as_str())
+                            .or_else(|| e.get("ip").and_then(|i| i.as_str()))
+                            .map(String::from))
+                        .collect();
+                    Some(addrs.join(", "))
+                }
+                _ => Some("Pending address".to_string()),
+            }
+        }
+        _ => {
+            // Generic fallback: status.phase, or the first condition of type=Ready.
+            if let Some(phase) = status.get("phase").and_then(|p| p.as_str()) {
+                return Some(phase.to_string());
+            }
+            let conditions = status.get("conditions").and_then(|c| c.as_array())?;
+            let ready = conditions.iter().find(|c| {
+                c.get("type").and_then(|t| t.as_str()) == Some("Ready")
+            })?;
+            let is_true = ready.get("status").and_then(|s| s.as_str()) == Some("True");
+            Some(if is_true { "Ready".to_string() } else { "NotReady".to_string() })
+        }
+    }
+}
+
+/// Convert an RFC 3339 timestamp string to a human age string ("5d", "3h", …).
+fn age_from_rfc3339(ts: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(ts) {
+        Ok(dt) => fmt_age_secs(Utc::now().timestamp() - dt.timestamp()),
+        Err(_) => "?".to_string(),
+    }
+}
+
 // ── Shared age helper ────────────────────────────────────────────────────────
 
 /// Convert an optional k8s `Time` into a human-readable age string.
 fn age_from_ts(ts: Option<&k8s_openapi::apimachinery::pkg::apis::meta::v1::Time>) -> String {
-    let secs = match ts {
-        Some(t) => (Utc::now().timestamp() - t.0.as_second()).max(0),
-        None => return "?".to_string(),
-    };
+    match ts {
+        Some(t) => fmt_age_secs(Utc::now().timestamp() - t.0.as_second()),
+        None => "?".to_string(),
+    }
+}
+
+/// Format a non-negative elapsed-seconds count as a compact age ("5d", "3h", …).
+fn fmt_age_secs(secs: i64) -> String {
+    let secs = secs.max(0);
     if secs < 60 { format!("{}s", secs) }
     else if secs < 3600 { format!("{}m", secs / 60) }
     else if secs < 86400 { format!("{}h", secs / 3600) }
@@ -680,5 +821,54 @@ mod tests {
         assert!(d.events.is_empty());
         assert_eq!(d.labels.get("app").map(String::as_str), Some("nginx"));
         assert_eq!(d.containers.len(), 2);
+    }
+
+    #[test]
+    fn generic_detail_from_replicaset_manifest() {
+        let manifest: serde_json::Value = serde_json::from_str(r#"{
+            "metadata": {"creationTimestamp": "2020-01-01T00:00:00Z"},
+            "spec": {"replicas": 3},
+            "status": {"readyReplicas": 2}
+        }"#).unwrap();
+        let d = GenericResourceDetail::from_manifest("ReplicaSet", "default", "web-abc", &manifest);
+        assert_eq!(d.kind, "ReplicaSet");
+        assert_eq!(d.status_summary.as_deref(), Some("2/3 ready"));
+        assert!(d.age.is_some());
+        assert!(d.error.is_none());
+        assert!(!d.loading);
+    }
+
+    #[test]
+    fn generic_detail_from_job_complete() {
+        let manifest: serde_json::Value = serde_json::from_str(r#"{
+            "metadata": {},
+            "status": {"succeeded": 1}
+        }"#).unwrap();
+        let d = GenericResourceDetail::from_manifest("Job", "default", "backup", &manifest);
+        assert_eq!(d.status_summary.as_deref(), Some("Complete"));
+    }
+
+    #[test]
+    fn generic_detail_missing_status_falls_back() {
+        let manifest: serde_json::Value = serde_json::from_str(r#"{
+            "metadata": {"creationTimestamp": "2020-01-01T00:00:00Z"}
+        }"#).unwrap();
+        let d = GenericResourceDetail::from_manifest("Ingress", "default", "x", &manifest);
+        assert!(d.status_summary.is_none());
+    }
+
+    #[test]
+    fn generic_detail_unavailable() {
+        let d = GenericResourceDetail::unavailable("Pod", "default", "ghost", "404".into());
+        assert_eq!(d.error.as_deref(), Some("404"));
+        assert!(!d.loading);
+    }
+
+    #[test]
+    fn generic_detail_loading() {
+        let d = GenericResourceDetail::loading("Job", "default", "backup");
+        assert!(d.loading);
+        assert!(d.error.is_none());
+        assert!(d.status_summary.is_none());
     }
 }

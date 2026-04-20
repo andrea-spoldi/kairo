@@ -3,9 +3,13 @@ use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::text::TextView;
 use kairo_core::{
     fmt_cpu, fmt_memory,
-    models::{ConfigMapSummary, DeploymentSummary, NodeSummary, PodDetail, ServiceSummary},
+    models::{
+        ConfigMapSummary, DeploymentSummary, GenericResourceDetail, NodeSummary, PodDetail,
+        ServiceSummary,
+    },
 };
 
 use crate::analyze::AnalyzeEventRequest;
@@ -13,6 +17,28 @@ use crate::theme::{
     status_color, status_symbol, ACCENT, BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING,
     STATUS_RUNNING, SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
+
+/// Small inline chip that copies `value` to the clipboard on click.
+fn copy_chip(
+    id: impl Into<ElementId>,
+    value: impl Into<String>,
+    cx: &mut Context<DetailPanel>,
+) -> impl IntoElement {
+    let value = value.into();
+    div()
+        .id(id.into())
+        .px(px(5.))
+        .py(px(1.))
+        .rounded(px(3.))
+        .cursor_pointer()
+        .text_xs()
+        .text_color(TEXT_MUTED)
+        .hover(|s| s.text_color(TEXT_PRIMARY).bg(HOVER_BG))
+        .child("⎘")
+        .on_click(cx.listener(move |_, _: &ClickEvent, _window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+        }))
+}
 
 // ── ResourceDetail ────────────────────────────────────────────────────────────
 
@@ -24,6 +50,9 @@ pub enum ResourceDetail {
     Service(ServiceSummary),
     ConfigMap(ConfigMapSummary),
     Node(NodeSummary),
+    /// Fallback view for kinds without a typed renderer, or for resources whose
+    /// typed fetch failed (deleted / forbidden).
+    Generic(GenericResourceDetail),
 }
 
 // ── DetailPanel ───────────────────────────────────────────────────────────────
@@ -87,6 +116,7 @@ impl Render for DetailPanel {
                 ResourceDetail::Service(d)    => render_service(d),
                 ResourceDetail::ConfigMap(d)  => render_configmap(d),
                 ResourceDetail::Node(d)       => render_node(d),
+                ResourceDetail::Generic(d)    => render_generic(d),
             })
             .into_any_element()
     }
@@ -213,6 +243,9 @@ fn name_header(name: &str, kind: &str, namespace: &str, age: &str) -> Div {
 
 fn render_pod(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyElement {
     let s = &detail.summary;
+    let name = s.name.clone();
+    let namespace = s.namespace.clone();
+    let node = s.node.clone();
 
     div()
         .flex()
@@ -227,16 +260,27 @@ fn render_pod(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyElement {
                         .child(Label::new(format!("node: {}", s.node)).text_sm().text_color(TEXT_SECONDARY))
                         .child(Label::new(format!("ready: {}", s.ready)).text_sm().text_color(TEXT_SECONDARY))
                         .child(Label::new(format!("restarts: {}", s.restarts)).text_sm().text_color(TEXT_SECONDARY)),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(copy_chip("pod-copy-name", name, cx))
+                        .child(copy_chip("pod-copy-ns", namespace, cx))
+                        .child(copy_chip("pod-copy-node", node, cx)),
                 ),
         )
-        .child(render_kv_section("Labels", &detail.labels))
-        .child(render_kv_section("Annotations", &detail.annotations))
+        .child(render_kv_section("Labels", &detail.labels, cx))
+        .child(render_kv_section("Annotations", &detail.annotations, cx))
         .child(render_pod_containers(detail))
         .child(render_pod_events(detail, cx))
         .into_any_element()
 }
 
-fn render_kv_section(title: &str, map: &std::collections::BTreeMap<String, String>) -> AnyElement {
+fn render_kv_section(
+    title: &str,
+    map: &std::collections::BTreeMap<String, String>,
+    cx: &mut Context<DetailPanel>,
+) -> AnyElement {
     let mut section = div()
         .flex()
         .flex_col()
@@ -247,10 +291,17 @@ fn render_kv_section(title: &str, map: &std::collections::BTreeMap<String, Strin
         section = section.child(Label::new("  (none)").text_sm().text_color(TEXT_MUTED));
     } else {
         for (k, v) in map {
+            let kv = format!("{k}={v}");
+            let chip_id = SharedString::from(format!("copy-{title}-{k}"));
             section = section.child(
-                Label::new(format!("  {k}={v}"))
-                    .text_sm()
-                    .text_color(TEXT_SECONDARY),
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Label::new(format!("  {kv}"))
+                            .text_sm()
+                            .text_color(TEXT_SECONDARY),
+                    )
+                    .child(copy_chip(chip_id, kv, cx)),
             );
         }
     }
@@ -317,7 +368,7 @@ fn render_pod_events(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyEl
         let pod_ns = detail.summary.namespace.clone();
         let pod_status = detail.summary.status.clone();
 
-        for ev in &detail.events {
+        for (i, ev) in detail.events.iter().enumerate() {
             let type_color = if ev.event_type == "Warning" { STATUS_FAILED } else { TEXT_SECONDARY };
             let json = serde_json::json!({
                 "pod": format!("{pod_ns}/{pod_name}"),
@@ -380,7 +431,13 @@ fn render_pod_events(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyEl
                                     .child(Label::new("⬡ Analyze").text_xs().text_color(ACCENT)),
                             ),
                     )
-                    .child(Label::new(ev.message.clone()).text_sm().text_color(TEXT_SECONDARY)),
+                    .child(
+                        TextView::markdown(
+                            SharedString::from(format!("ev-msg-{i}")),
+                            SharedString::from(ev.message.clone()),
+                        )
+                        .selectable(true),
+                    ),
             );
         }
     }
@@ -457,6 +514,77 @@ fn render_configmap(c: &ConfigMapSummary) -> AnyElement {
                         .text_color(TEXT_MUTED),
                 ),
         )
+        .into_any_element()
+}
+
+// ── Generic renderer ──────────────────────────────────────────────────────────
+
+fn render_generic(d: &GenericResourceDetail) -> AnyElement {
+    let ns = if d.namespace.is_empty() { "<cluster>".to_string() } else { d.namespace.clone() };
+    let age = d.age.clone().unwrap_or_else(|| "?".to_string());
+
+    let body: AnyElement = if let Some(reason) = d.error.as_ref() {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(STATUS_FAILED)
+            .child(
+                Label::new("Resource unavailable")
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(STATUS_FAILED),
+            )
+            .child(
+                Label::new(format!(
+                    "The {} may have been deleted or is not accessible. ({reason})",
+                    d.kind
+                ))
+                .text_sm()
+                .text_color(TEXT_MUTED),
+            )
+            .into_any_element()
+    } else if d.loading {
+        Label::new("Loading…")
+            .text_sm()
+            .text_color(TEXT_MUTED)
+            .into_any_element()
+    } else {
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(section_title("Overview"))
+            .child(kv_row("Kind", d.kind.clone()))
+            .child(kv_row("Namespace", ns.clone()))
+            .child(kv_row("Name", d.name.clone()))
+            .child(kv_row("Age", age.clone()));
+        if let Some(status) = d.status_summary.as_ref() {
+            section = section.child(kv_row("Status", status.clone()));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(section)
+            .child(
+                Label::new("Open the YAML tab for the full manifest")
+                    .text_xs()
+                    .text_color(TEXT_MUTED),
+            )
+            .into_any_element()
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .child(name_header(&d.name, &d.kind, &ns, &age))
+        .child(body)
         .into_any_element()
 }
 

@@ -1,3 +1,6 @@
+use std::time::Duration;
+
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::Button;
 use gpui_component::dock::{Panel, PanelEvent};
@@ -29,6 +32,8 @@ pub struct LogViewerPanel {
     scroll_handle: UniformListScrollHandle,
     /// "namespace/pod-name" shown in the toolbar.
     pod_label: Option<String>,
+    /// True for 1.5 s after the user clicks "Copy Logs".
+    copied_flash: bool,
 }
 
 impl LogViewerPanel {
@@ -41,7 +46,23 @@ impl LogViewerPanel {
             selected_container_ix: 0,
             scroll_handle: UniformListScrollHandle::new(),
             pod_label: None,
+            copied_flash: false,
         }
+    }
+
+    fn trigger_copy_flash(&mut self, cx: &mut Context<Self>) {
+        self.copied_flash = true;
+        cx.notify();
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<LogViewerPanel>, cx| {
+            executor.timer(Duration::from_millis(1500)).await;
+            this.update(cx, |panel: &mut LogViewerPanel, cx| {
+                panel.copied_flash = false;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Called by `Workspace` when a pod is selected and detail has loaded.
@@ -141,6 +162,8 @@ impl Panel for LogViewerPanel {
 impl Render for LogViewerPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let paused = self.paused;
+        let copied = self.copied_flash;
+        let has_lines = !self.lines.is_empty();
         let line_count = self.lines.len();
         // Clone is cheap — SharedString wraps an Arc.
         let lines = self.lines.clone();
@@ -234,7 +257,25 @@ impl Render for LogViewerPanel {
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.clear(cx);
                             })),
-                    ),
+                    )
+                    // Copy Logs
+                    .when(has_lines, |row| {
+                        row.child(
+                            Button::new("copy-logs")
+                                .label(if copied { "Copied!" } else { "Copy Logs" })
+                                .compact()
+                                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                    let text = this
+                                        .lines
+                                        .iter()
+                                        .map(|s| s.as_ref())
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                    this.trigger_copy_flash(cx);
+                                })),
+                        )
+                    }),
             )
             // ── Log lines — monospace text_sm for comfortable reading ─────────
             .child(

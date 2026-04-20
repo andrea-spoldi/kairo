@@ -16,7 +16,8 @@ use gpui_component::{
     select::{Select, SelectEvent, SelectState},
 };
 use kairo_core::{
-    ClusterEvent, ConfigMapSummary, DeploymentSummary, KubeClient, NodeSummary, ServiceSummary,
+    ClusterEvent, ConfigMapSummary, DeploymentSummary, GenericResourceDetail, KubeClient,
+    NodeSummary, ServiceSummary,
     models::PodSummary,
     watchers::{ClusterEventWatcher, ConfigMapWatcher, DeploymentWatcher, NamespaceWatcher, NodeWatcher, ServiceWatcher},
 };
@@ -69,10 +70,19 @@ enum KubeEvent {
     ConfigMapList(Vec<ConfigMapSummary>),
     NodeList(Vec<NodeSummary>),
     PodDetail(kairo_core::models::PodDetail),
-    PodDetailError(String),
     /// YAML fetched for a resource — (panel title, yaml string).
     ResourceYaml(String, String),
-    ResourceYamlError(String),
+    /// A resource fetch (typed detail or YAML) failed. Surfaced in the Details
+    /// panel as an "unavailable" Generic view so the click isn't silently dropped.
+    ResourceFetchError {
+        kind: String,
+        namespace: String,
+        name: String,
+        msg: String,
+    },
+    /// Generic fallback detail for kinds without a typed renderer, or placeholder
+    /// while the typed fetch is in flight.
+    GenericDetail(GenericResourceDetail),
     LogLine(String),
     LogError(String),
     WarningEvent(ClusterEvent),
@@ -611,9 +621,6 @@ impl Workspace {
                     }
                 }
             }
-            KubeEvent::PodDetailError(msg) => {
-                error!("pod detail fetch error: {msg}");
-            }
             KubeEvent::ResourceYaml(title, yaml) => {
                 self.yaml_panel.update(cx, |panel, cx| {
                     panel.set_yaml(title, yaml);
@@ -621,8 +628,13 @@ impl Workspace {
                 });
                 self.ensure_right_dock_open(window, cx);
             }
-            KubeEvent::ResourceYamlError(msg) => {
-                error!("yaml fetch error: {msg}");
+            KubeEvent::ResourceFetchError { kind, namespace, name, msg } => {
+                error!("resource fetch error {kind} {namespace}/{name}: {msg}");
+                let detail = GenericResourceDetail::unavailable(&kind, &namespace, &name, msg);
+                self.show_detail(ResourceDetail::Generic(detail), window, cx);
+            }
+            KubeEvent::GenericDetail(detail) => {
+                self.show_detail(ResourceDetail::Generic(detail), window, cx);
             }
             KubeEvent::LogLine(line) => {
                 self.log_panel.update(cx, |panel, cx| {
@@ -862,16 +874,15 @@ impl Workspace {
     }
 
     /// Fetch pod detail + events asynchronously when a pod row is clicked.
-    fn on_pod_selected(&mut self, name: &str, namespace: &str, cx: &mut Context<Self>) {
+    fn on_pod_selected(&mut self, name: &str, namespace: &str, _cx: &mut Context<Self>) {
         self.fetch_resource_yaml("Pod", namespace, name);
-        // Update AI context for this resource.
-        let ctx = format!("Pod {namespace}/{name}");
-        self.ai_panel.update(cx, |p, _| p.set_context(ctx));
         let Some(client) = self.kube_client.clone() else { return };
         let events = self.events.clone();
         let name = name.to_string();
         let namespace = namespace.to_string();
 
+        let err_name = name.clone();
+        let err_ns = namespace.clone();
         kube_runtime::handle().spawn(async move {
             match client.fetch_pod_detail(&namespace, &name).await {
                 Ok(mut detail) => {
@@ -881,16 +892,20 @@ impl Workspace {
                     events.lock().unwrap().push_back(KubeEvent::PodDetail(detail));
                 }
                 Err(e) => {
-                    events
-                        .lock()
-                        .unwrap()
-                        .push_back(KubeEvent::PodDetailError(e.to_string()));
+                    events.lock().unwrap().push_back(KubeEvent::ResourceFetchError {
+                        kind: "Pod".to_string(),
+                        namespace: err_ns,
+                        name: err_name,
+                        msg: e.to_string(),
+                    });
                 }
             }
         });
     }
 
-    /// Fetch raw YAML for a resource and push it to the YAML viewer.
+    /// Fetch raw YAML for a resource with a typed API and push it to the YAML viewer.
+    /// Only called for kinds with a typed helper; unknown kinds go through
+    /// `fetch_any_and_upgrade_generic` instead.
     fn fetch_resource_yaml(&mut self, kind: &str, namespace: &str, name: &str) {
         let Some(client) = self.kube_client.clone() else { return };
         let events = self.events.clone();
@@ -899,20 +914,56 @@ impl Workspace {
         let name = name.to_string();
 
         kube_runtime::handle().spawn(async move {
-            let title = yaml_title(&kind, Some(namespace.as_str()).filter(|s| !s.is_empty()), &name);
+            let title = yaml_title(&kind, Some(namespace.as_str()), &name);
             let result = match kind.as_str() {
+                "Pod"        => client.fetch_pod_yaml(&namespace, &name).await,
                 "Deployment" => client.fetch_deployment_yaml(&namespace, &name).await,
                 "Service"    => client.fetch_service_yaml(&namespace, &name).await,
                 "ConfigMap"  => client.fetch_configmap_yaml(&namespace, &name).await,
                 "Node"       => client.fetch_node_yaml(&name).await,
-                _            => client.fetch_pod_yaml(&namespace, &name).await,
+                other => Err(kairo_core::CoreError::Other(format!(
+                    "fetch_resource_yaml called with unsupported kind: {other}"
+                ))),
             };
             match result {
                 Ok(yaml) => {
                     events.lock().unwrap().push_back(KubeEvent::ResourceYaml(title, yaml));
                 }
                 Err(e) => {
-                    events.lock().unwrap().push_back(KubeEvent::ResourceYamlError(e.to_string()));
+                    events.lock().unwrap().push_back(KubeEvent::ResourceFetchError {
+                        kind, namespace, name, msg: e.to_string(),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Kick off a dynamic fetch that populates both the YAML tab and the
+    /// Details tab's Generic view. Used when no typed renderer exists for
+    /// `kind`, or when the typed cached-list lookup missed.
+    fn fetch_any_and_upgrade_generic(&mut self, kind: &str, namespace: &str, name: &str) {
+        let Some(client) = self.kube_client.clone() else { return };
+        let events = self.events.clone();
+        let kind = kind.to_string();
+        let namespace = namespace.to_string();
+        let name = name.to_string();
+
+        kube_runtime::handle().spawn(async move {
+            let title = yaml_title(&kind, Some(namespace.as_str()), &name);
+
+            match client
+                .fetch_any_yaml_and_detail(&kind, &namespace, &name)
+                .await
+            {
+                Ok((yaml, detail)) => {
+                    let mut q = events.lock().unwrap();
+                    q.push_back(KubeEvent::ResourceYaml(title, yaml));
+                    q.push_back(KubeEvent::GenericDetail(detail));
+                }
+                Err(e) => {
+                    events.lock().unwrap().push_back(KubeEvent::ResourceFetchError {
+                        kind, namespace, name, msg: e.to_string(),
+                    });
                 }
             }
         });
@@ -940,7 +991,11 @@ impl Workspace {
     }
 
     /// Load the given resource into the inspector (Details + YAML + Stats) and
-    /// open the right dock.  For Pods, also starts log streaming.
+    /// open the right dock. For Pods, also starts log streaming.
+    ///
+    /// When the typed fast path misses (cache miss, or kind has no typed view),
+    /// eagerly show a Generic loading placeholder so the click is never silently
+    /// dropped while the async fetch runs.
     fn open_resource(
         &mut self,
         kind: &str,
@@ -949,9 +1004,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let ai_ctx = if namespace.is_empty() {
+            format!("{kind} {name}")
+        } else {
+            format!("{kind} {namespace}/{name}")
+        };
+        self.ai_panel.update(cx, |p, _| p.set_context(ai_ctx));
+
+        let mut typed_hit = false;
         match kind {
             "Pod" => {
                 self.on_pod_selected(name, namespace, cx);
+                typed_hit = true;
             }
             "Deployment" => {
                 if let Some(d) = self
@@ -961,9 +1025,8 @@ impl Workspace {
                     .cloned()
                 {
                     self.fetch_resource_yaml("Deployment", namespace, name);
-                    let ctx = format!("Deployment {namespace}/{name}");
-                    self.ai_panel.update(cx, |p, _| p.set_context(ctx));
                     self.show_detail(ResourceDetail::Deployment(d), window, cx);
+                    typed_hit = true;
                 }
             }
             "Service" => {
@@ -974,9 +1037,8 @@ impl Workspace {
                     .cloned()
                 {
                     self.fetch_resource_yaml("Service", namespace, name);
-                    let ctx = format!("Service {namespace}/{name}");
-                    self.ai_panel.update(cx, |p, _| p.set_context(ctx));
                     self.show_detail(ResourceDetail::Service(s), window, cx);
+                    typed_hit = true;
                 }
             }
             "ConfigMap" => {
@@ -987,22 +1049,26 @@ impl Workspace {
                     .cloned()
                 {
                     self.fetch_resource_yaml("ConfigMap", namespace, name);
-                    let ctx = format!("ConfigMap {namespace}/{name}");
-                    self.ai_panel.update(cx, |p, _| p.set_context(ctx));
                     self.show_detail(ResourceDetail::ConfigMap(c), window, cx);
+                    typed_hit = true;
                 }
             }
             "Node" => {
                 if let Some(n) = self.all_nodes.iter().find(|n| n.name == name).cloned() {
                     self.fetch_resource_yaml("Node", "", name);
-                    let ctx = format!("Node {name}");
-                    self.ai_panel.update(cx, |p, _| p.set_context(ctx));
                     self.show_detail(ResourceDetail::Node(n), window, cx);
+                    typed_hit = true;
                 }
             }
-            _ => {
-                self.fetch_resource_yaml(kind, namespace, name);
-            }
+            _ => {}
+        }
+
+        if !typed_hit {
+            // Node is always cluster-scoped; ignore any stale namespace from the caller.
+            let dyn_ns = if kind == "Node" { "" } else { namespace };
+            let placeholder = GenericResourceDetail::loading(kind, dyn_ns, name);
+            self.show_detail(ResourceDetail::Generic(placeholder), window, cx);
+            self.fetch_any_and_upgrade_generic(kind, dyn_ns, name);
         }
     }
 

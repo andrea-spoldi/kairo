@@ -5,6 +5,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     label::Label,
     scroll::ScrollableElement,
+    text::TextView,
 };
 use serde::Deserialize;
 
@@ -317,7 +318,7 @@ impl Render for AiPanel {
                     .flex()
                     .flex_col()
                     .gap(px(12.))
-                    .children(messages.into_iter().map(render_entry))
+                    .children(messages.into_iter().enumerate().map(|(i, e)| render_entry(i, e)))
                     .children(streaming.map(render_streaming_entry));
                 if messages_empty && streaming_none {
                     inner = inner.child(render_empty_state());
@@ -434,7 +435,7 @@ fn confidence_color(level: &str) -> Hsla {
 
 // ── Entry renderers ────────────────────────────────────────────────────────────
 
-fn render_entry(entry: ChatEntry) -> impl IntoElement {
+fn render_entry(ix: usize, entry: ChatEntry) -> impl IntoElement {
     // Tool call cards are rendered separately before the generic bubble logic.
     if entry.role == AiRole::ToolCall {
         return h_flex()
@@ -458,6 +459,7 @@ fn render_entry(entry: ChatEntry) -> impl IntoElement {
     };
 
     if align_right {
+        let content_copy = entry.content.clone();
         div()
             .flex()
             .flex_col()
@@ -476,19 +478,37 @@ fn render_entry(entry: ChatEntry) -> impl IntoElement {
                     .text_color(TEXT_PRIMARY)
                     .child(SharedString::from(entry.content)),
             )
+            .child(copy_chip_button(content_copy))
             .into_any_element()
     } else if entry.role == AiRole::Assistant {
         // Try structured rendering for analysis responses.
         if let Some(analysis) = try_parse_analysis(&entry.content) {
             return render_analysis_entry(analysis);
         }
-        render_plain_assistant(&entry.content)
+        render_plain_assistant(ix, &entry.content)
     } else {
-        render_plain_assistant(&entry.content)
+        render_plain_assistant(ix, &entry.content)
     }
 }
 
-fn render_plain_assistant(content: &str) -> AnyElement {
+/// Small inline copy chip used on message bubbles — plain closure, no cx.listener needed.
+fn copy_chip_button(text: String) -> impl IntoElement {
+    div()
+        .cursor_pointer()
+        .px(px(5.))
+        .py(px(1.))
+        .rounded(px(3.))
+        .text_xs()
+        .text_color(TEXT_MUTED)
+        .hover(|s| s.text_color(TEXT_PRIMARY).bg(HOVER_BG))
+        .child("⎘")
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        })
+}
+
+fn render_plain_assistant(ix: usize, content: &str) -> AnyElement {
+    let content_copy = content.to_string();
     div()
         .flex()
         .flex_col()
@@ -502,10 +522,15 @@ fn render_plain_assistant(content: &str) -> AnyElement {
                 .py(px(7.))
                 .rounded(px(8.))
                 .rounded_tl(px(2.))
-                .text_sm()
-                .text_color(TEXT_PRIMARY)
-                .child(SharedString::from(content.to_string())),
+                .child(
+                    TextView::markdown(
+                        SharedString::from(format!("ai-msg-{ix}")),
+                        SharedString::from(content.to_string()),
+                    )
+                    .selectable(true),
+                ),
         )
+        .child(copy_chip_button(content_copy))
         .into_any_element()
 }
 
@@ -646,7 +671,8 @@ fn render_streaming_entry(buf: String) -> impl IntoElement {
                     .text_sm()
                     .text_color(STATUS_PENDING)
                     .child(SharedString::from("Analyzing situation… ▊")),
-            );
+            )
+            .into_any_element();
     }
 
     let display = if buf.is_empty() {
@@ -668,10 +694,12 @@ fn render_streaming_entry(buf: String) -> impl IntoElement {
                 .py(px(7.))
                 .rounded(px(8.))
                 .rounded_tl(px(2.))
-                .text_sm()
-                .text_color(TEXT_PRIMARY)
-                .child(SharedString::from(display)),
+                .child(
+                    TextView::markdown("ai-streaming", SharedString::from(display))
+                        .selectable(true),
+                ),
         )
+        .into_any_element()
 }
 
 fn render_empty_state() -> impl IntoElement {

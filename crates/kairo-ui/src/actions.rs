@@ -12,5 +12,6 @@ actions!(
         OpenCommandPalette,
         CloseCommandPalette,
         OpenSettings,
+        YankName,
     ]
 );

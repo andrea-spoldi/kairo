@@ -9,8 +9,7 @@ use kairo_core::models::ClusterEvent;
 
 use crate::analyze::AnalyzeEventRequest;
 use crate::theme::{
-    ACCENT, BORDER, HOVER_BG, STATUS_FAILED, SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY,
-    TEXT_SECONDARY,
+    ACCENT, BORDER, HOVER_BG, STATUS_FAILED, SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_SECONDARY,
 };
 
 const MAX_EVENTS: usize = 100;
@@ -213,7 +212,7 @@ fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> imp
                         .child(Label::new("⬡ Analyze").text_xs().text_color(ACCENT)),
                 ),
         )
-        // ── Namespace / object name ───────────────────────────────────────────
+        // ── Namespace / object name (clickable handle — styled as a link) ────
         .child(
             h_flex()
                 .gap_1()
@@ -226,7 +225,13 @@ fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> imp
                 .child(
                     Label::new(ev_clone.object_name.clone())
                         .text_sm()
-                        .text_color(TEXT_PRIMARY),
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ACCENT),
+                )
+                .child(
+                    Label::new(format!("· {}", ev_clone.object_kind))
+                        .text_xs()
+                        .text_color(TEXT_MUTED),
                 ),
         )
         // ── Message ───────────────────────────────────────────────────────────
