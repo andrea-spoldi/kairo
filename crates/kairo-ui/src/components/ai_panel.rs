@@ -10,9 +10,10 @@ use gpui_component::{
 use serde::Deserialize;
 
 use crate::ai_client::ChatMessage;
+use crate::scope::AgentScope;
 use crate::theme::{
-    ACCENT, BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE, TEXT_MUTED,
-    TEXT_PRIMARY, TEXT_SECONDARY,
+    ACCENT, BORDER, HOVER_BG, SELECTED_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING,
+    SURFACE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
 // ── Events ─────────────────────────────────────────────────────────────────────
@@ -56,6 +57,8 @@ pub struct AiPanel {
     context_text: Option<String>,
     /// Number of MCP tools currently available (0 = MCP not connected).
     mcp_tool_count: usize,
+    /// Current investigation scope bound to this AI session.
+    scope: AgentScope,
 }
 
 const MAX_AI_MESSAGES: usize = 100;
@@ -81,6 +84,7 @@ impl AiPanel {
             streaming_buffer: None,
             context_text: None,
             mcp_tool_count: 0,
+            scope: AgentScope::None,
         }
     }
 
@@ -161,6 +165,23 @@ impl AiPanel {
     /// Update the MCP tool count shown in the panel header.
     pub fn set_mcp_tool_count(&mut self, n: usize, cx: &mut Context<Self>) {
         self.mcp_tool_count = n;
+        cx.notify();
+    }
+
+    /// Bind this session to an investigation scope (shows scope chip in header).
+    pub fn set_scope(&mut self, scope: AgentScope, cx: &mut Context<Self>) {
+        self.scope = scope;
+        cx.notify();
+    }
+
+    /// Inject a system-context block as a hidden user message (visible in chat as small label).
+    pub fn push_system_context(&mut self, context_block: String, cx: &mut Context<Self>) {
+        if context_block.is_empty() { return; }
+        self.messages.push(ChatEntry {
+            role: AiRole::User,
+            content: "[Context attached — ready for your question]".to_string(),
+            api_content: Some(context_block),
+        });
         cx.notify();
     }
 
@@ -261,6 +282,8 @@ impl Render for AiPanel {
         let streaming_none = streaming.is_none();
         let messages = self.messages.to_vec();
         let mcp_tool_count = self.mcp_tool_count;
+        let scope_label = self.scope.label();
+        let quick_actions: Vec<&'static str> = self.scope.quick_actions().to_vec();
 
         div()
             .size_full()
@@ -310,6 +333,71 @@ impl Render for AiPanel {
                             .child(Label::new("Clear").text_xs().text_color(TEXT_MUTED)),
                     ),
             )
+            // ── Scope chip + quick actions ────────────────────────────────────
+            .when_some(scope_label, |el, label| {
+                el.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(BORDER)
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py(px(2.))
+                                        .rounded(px(10.))
+                                        .bg(SELECTED_BG)
+                                        .text_xs()
+                                        .text_color(TEXT_SECONDARY)
+                                        .child(SharedString::from(label)),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    div()
+                                        .cursor_pointer()
+                                        .text_xs()
+                                        .text_color(TEXT_MUTED)
+                                        .hover(|s| s.text_color(TEXT_PRIMARY))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                this.scope = AgentScope::None;
+                                                cx.notify();
+                                            }),
+                                        )
+                                        .child("×"),
+                                ),
+                        )
+                        .when(!quick_actions.is_empty(), |el| {
+                            el.child(
+                                h_flex()
+                                    .gap(px(4.))
+                                    .flex_wrap()
+                                    .children(quick_actions.into_iter().map(|action| {
+                                        div()
+                                            .px_2()
+                                            .py(px(2.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(BORDER)
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(HOVER_BG))
+                                            .text_xs()
+                                            .text_color(TEXT_MUTED)
+                                            .child(action)
+                                    })),
+                            )
+                        }),
+                )
+            })
             // ── Message list ──────────────────────────────────────────────────
             .child({
                 let mut inner = div()

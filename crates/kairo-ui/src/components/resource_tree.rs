@@ -5,7 +5,7 @@ use gpui_component::dock::{Panel, PanelControl, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
-use kairo_core::models::{ResourceTreeNode, TreeNodeKind};
+use kairo_core::models::{RelationType, ResourceRelationship, ResourceScope, ResourceTreeNode, TreeNodeKind};
 
 use crate::theme::{
     HOVER_BG, SELECTED_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, TEXT_MUTED,
@@ -33,6 +33,9 @@ struct FlatRow {
     name: String,
     namespace: Option<String>,
     status: Option<String>,
+    scope: ResourceScope,
+    /// Up to 2 relationship badges to show inline.
+    relationships: Vec<ResourceRelationship>,
     depth: usize,
     has_children: bool,
     is_expanded: bool,
@@ -73,7 +76,7 @@ impl ResourceTreePanel {
 
     fn auto_expand_defaults(&mut self, node: &ResourceTreeNode) {
         match node.kind {
-            TreeNodeKind::ClusterRoot | TreeNodeKind::Namespace => {
+            TreeNodeKind::ClusterRoot | TreeNodeKind::Namespace | TreeNodeKind::KindGroup(_) => {
                 self.expanded.insert(node.id.clone());
             }
             _ => {}
@@ -101,12 +104,16 @@ impl ResourceTreePanel {
     ) {
         let is_expanded = expanded.contains(&node.id);
         let has_children = !node.children.is_empty();
+        // Cap relationship badges at 2 to avoid overflow
+        let relationships = node.relationships.iter().take(2).cloned().collect();
         rows.push(FlatRow {
             id: node.id.clone(),
             kind: node.kind.clone(),
             name: node.name.clone(),
             namespace: node.namespace.clone(),
             status: node.status.clone(),
+            scope: node.scope.clone(),
+            relationships,
             depth,
             has_children,
             is_expanded,
@@ -164,13 +171,18 @@ fn kind_icon(kind: &TreeNodeKind) -> &'static str {
         TreeNodeKind::Namespace => "⬚",
         TreeNodeKind::KindGroup(_) => "▤",
         TreeNodeKind::Deployment => "▣",
+        TreeNodeKind::ReplicaSet => "◫",
         TreeNodeKind::StatefulSet => "▥",
         TreeNodeKind::DaemonSet => "▦",
         TreeNodeKind::Job => "◷",
         TreeNodeKind::Pod => "◉",
+        TreeNodeKind::Container => "▸",
         TreeNodeKind::Service => "⬡",
+        TreeNodeKind::Ingress => "⊶",
         TreeNodeKind::ConfigMap => "≡",
         TreeNodeKind::Node => "◈",
+        TreeNodeKind::HorizontalPodAutoscaler => "⇅",
+        TreeNodeKind::StorageClass => "⊞",
     }
 }
 
@@ -183,17 +195,47 @@ fn status_color(status: &str) -> Hsla {
     }
 }
 
-/// Return the Kubernetes kind string for selectable node kinds, or `None` for
-/// structural nodes (ClusterRoot, Namespace, KindGroup) that are not selectable.
-fn selectable_kind(kind: &TreeNodeKind) -> Option<&'static str> {
+/// Return the Kubernetes kind string for selectable node kinds.
+/// Container (Embedded) and structural nodes are non-selectable.
+fn selectable_kind(kind: &TreeNodeKind, scope: &ResourceScope) -> Option<&'static str> {
+    if *scope == ResourceScope::Embedded {
+        return None;
+    }
     match kind {
         TreeNodeKind::Pod => Some("Pod"),
         TreeNodeKind::Deployment => Some("Deployment"),
+        TreeNodeKind::ReplicaSet => Some("ReplicaSet"),
         TreeNodeKind::Service => Some("Service"),
+        TreeNodeKind::Ingress => Some("Ingress"),
         TreeNodeKind::ConfigMap => Some("ConfigMap"),
         TreeNodeKind::Node => Some("Node"),
+        TreeNodeKind::StorageClass => Some("StorageClass"),
+        TreeNodeKind::HorizontalPodAutoscaler => Some("HorizontalPodAutoscaler"),
         _ => None,
     }
+}
+
+fn rel_badge_text(rel: &ResourceRelationship) -> String {
+    let arrow = match rel.rel_type {
+        RelationType::References => "→",
+        RelationType::TargetedBy => "←",
+        RelationType::Selects => "→",
+        RelationType::RoutesTo => "→",
+        RelationType::BindsTo => "↔",
+        RelationType::UsesStorageClass => "→",
+        RelationType::Targets => "→",
+    };
+    let kind_abbr = match rel.kind.as_str() {
+        "ServiceAccount" => "SA",
+        "ConfigMap" => "CM",
+        "Secret" => "Sec",
+        "PersistentVolumeClaim" => "PVC",
+        "HorizontalPodAutoscaler" => "HPA",
+        "Service" => "Svc",
+        "Pod" => "Pod",
+        other => other,
+    };
+    format!("{arrow}{kind_abbr}:{}", rel.name)
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────
@@ -203,11 +245,9 @@ impl Render for ResourceTreePanel {
         let rows = self.rows.clone();
         let selected = self.selected.clone();
 
-        // Single return path: build list content then wrap in scrollable outer div.
         let mut list = div().flex().flex_col().p(px(4.)).gap(px(1.));
 
         if rows.is_empty() {
-            // Inline empty state — no early return avoids type-mismatch with Scrollable<Div>.
             list = list
                 .flex_1()
                 .items_center()
@@ -220,6 +260,7 @@ impl Render for ResourceTreePanel {
             let id = row.id.clone();
             let has_children = row.has_children;
             let kind = row.kind.clone();
+            let scope = row.scope.clone();
             let name_ev = row.name.clone();
             let ns_ev = row.namespace.clone().unwrap_or_default();
 
@@ -232,6 +273,8 @@ impl Render for ResourceTreePanel {
             let name_display = SharedString::from(row.name.clone());
             let status = row.status.clone();
             let indent = px(row.depth as f32 * 14.0);
+            let is_container = row.scope == ResourceScope::Embedded;
+            let relationships = row.relationships.clone();
 
             let row_el = h_flex()
                 .id(("tree-row", ix))
@@ -239,19 +282,20 @@ impl Render for ResourceTreePanel {
                 .pr(px(8.))
                 .py(px(3.))
                 .rounded_md()
-                .cursor_pointer()
+                .when(!is_container, |s| s.cursor_pointer())
                 .when(is_selected, |s| s.bg(SELECTED_BG))
                 .when(!is_selected, |s| s.hover(|s| s.bg(HOVER_BG)))
                 .gap(px(4.))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    if is_container { return; }
                     this.selected = Some(id.clone());
                     if has_children {
                         this.toggle(id.clone(), cx);
                     } else {
                         cx.notify();
                     }
-                    if let Some(kind_str) = selectable_kind(&kind) {
-                        let namespace = if kind_str == "Node" {
+                    if let Some(kind_str) = selectable_kind(&kind, &scope) {
+                        let namespace = if kind_str == "Node" || kind_str == "StorageClass" {
                             String::new()
                         } else {
                             ns_ev.clone()
@@ -276,19 +320,29 @@ impl Render for ResourceTreePanel {
                         .w(px(14.))
                         .flex_shrink_0()
                         .text_xs()
-                        .text_color(TEXT_SECONDARY)
+                        .text_color(if is_container { TEXT_MUTED } else { TEXT_SECONDARY })
                         .child(icon),
                 )
                 .child(
                     div()
                         .flex_1()
                         .text_sm()
-                        .text_color(TEXT_PRIMARY)
+                        .text_color(if is_container { TEXT_MUTED } else { TEXT_PRIMARY })
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .child(name_display),
                 )
+                .when(!relationships.is_empty(), |el| {
+                    let badges: Vec<_> = relationships.iter().map(|rel| {
+                        div()
+                            .text_xs()
+                            .text_color(TEXT_MUTED)
+                            .flex_shrink_0()
+                            .child(SharedString::from(rel_badge_text(rel)))
+                    }).collect();
+                    el.children(badges)
+                })
                 .when_some(status, |el, st| {
                     let color = status_color(&st);
                     el.child(

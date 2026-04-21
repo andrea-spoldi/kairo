@@ -14,14 +14,10 @@ use crate::theme::{
 
 const MAX_EVENTS: usize = 100;
 
-/// Emitted when the user clicks an event card body. Drives the right-dock
-/// inspector to show the involved resource (details, YAML, logs, stats).
+/// Emitted when the user clicks an event card body. Carries the full event so
+/// Workspace can both open the inspector AND store the event for "Send to Agent".
 #[derive(Clone)]
-pub struct EventResourceSelected {
-    pub kind: String,
-    pub namespace: String,
-    pub name: String,
-}
+pub struct EventBodyClicked(pub ClusterEvent);
 
 /// Center-panel tab — live feed of cluster-wide Warning events.
 pub struct EventFeedPanel {
@@ -30,7 +26,7 @@ pub struct EventFeedPanel {
 }
 
 impl EventEmitter<AnalyzeEventRequest> for EventFeedPanel {}
-impl EventEmitter<EventResourceSelected> for EventFeedPanel {}
+impl EventEmitter<EventBodyClicked> for EventFeedPanel {}
 
 impl EventFeedPanel {
     pub fn new(cx: &mut App) -> Self {
@@ -147,13 +143,10 @@ fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> imp
     });
     let json_str = serde_json::to_string_pretty(&json).unwrap_or_default();
 
-    // Card body click → select resource in inspector.
-    let sel_kind = ev.object_kind.clone();
-    let sel_ns = ev.namespace.clone();
-    let sel_name = ev.object_name.clone();
     let card_id = ElementId::Name(
         format!("event-card-{}-{}-{}", ev.namespace, ev.object_name, ev.last_time).into(),
     );
+    let ev_body = ev.clone();
 
     div()
         .id(card_id)
@@ -169,13 +162,7 @@ fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> imp
         .cursor_pointer()
         .hover(|s| s.bg(HOVER_BG))
         .on_click(cx.listener(move |_this, _: &ClickEvent, _window, cx| {
-            if !sel_kind.is_empty() && !sel_name.is_empty() {
-                cx.emit(EventResourceSelected {
-                    kind: sel_kind.clone(),
-                    namespace: sel_ns.clone(),
-                    name: sel_name.clone(),
-                });
-            }
+            cx.emit(EventBodyClicked(ev_body.clone()));
         }))
         // ── Reason + count + Analyze button ──────────────────────────────────
         .child(
