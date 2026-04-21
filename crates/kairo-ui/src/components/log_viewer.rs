@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
@@ -7,9 +8,14 @@ use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 
+use crate::scope::LogRef;
 use crate::theme::{ACCENT, BORDER, HOVER_BG, SELECTED_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
 
 const MAX_LINES: usize = 5_000;
+
+/// Emitted when the user clicks "Send N lines to Agent" in the log toolbar.
+#[derive(Clone, Debug)]
+pub struct SendLogToAgent;
 
 /// Emitted when the user selects a different container tab.
 #[derive(Clone)]
@@ -34,6 +40,10 @@ pub struct LogViewerPanel {
     pod_label: Option<String>,
     /// True for 1.5 s after the user clicks "Copy Logs".
     copied_flash: bool,
+    /// Indices of lines the user has selected for "Send to Agent".
+    selected_lines: HashSet<usize>,
+    /// Last clicked line index — used for shift+click range selection.
+    last_clicked: Option<usize>,
 }
 
 impl LogViewerPanel {
@@ -47,6 +57,8 @@ impl LogViewerPanel {
             scroll_handle: UniformListScrollHandle::new(),
             pod_label: None,
             copied_flash: false,
+            selected_lines: HashSet::new(),
+            last_clicked: None,
         }
     }
 
@@ -78,7 +90,68 @@ impl LogViewerPanel {
         self.selected_container_ix = 0;
         self.lines.clear();
         self.paused = false;
+        self.selected_lines.clear();
+        self.last_clicked = None;
         cx.notify();
+    }
+
+    /// Toggle selection of a single line (or a range on shift+click).
+    fn toggle_line(&mut self, ix: usize, shift: bool, cx: &mut Context<Self>) {
+        if shift {
+            let anchor = self.last_clicked.unwrap_or(ix);
+            let (lo, hi) = if anchor <= ix { (anchor, ix) } else { (ix, anchor) };
+            let all_selected = (lo..=hi).all(|i| self.selected_lines.contains(&i));
+            if all_selected {
+                for i in lo..=hi { self.selected_lines.remove(&i); }
+            } else {
+                for i in lo..=hi { self.selected_lines.insert(i); }
+            }
+        } else if self.selected_lines.contains(&ix) {
+            self.selected_lines.remove(&ix);
+        } else {
+            self.selected_lines.insert(ix);
+        }
+        self.last_clicked = Some(ix);
+        cx.notify();
+    }
+
+    /// Build a log context snapshot for the AI agent from the currently selected lines.
+    pub fn build_log_context(&self) -> LogRef {
+        let mut sorted: Vec<usize> = self.selected_lines.iter().cloned().collect();
+        sorted.sort_unstable();
+
+        let selected: Vec<String> = sorted.iter()
+            .take(100)
+            .filter_map(|&i| self.lines.get(i).map(|s| s.as_ref().to_string()))
+            .collect();
+
+        let (lo, hi) = sorted.iter().fold(
+            (usize::MAX, 0usize),
+            |(lo, hi), &i| (lo.min(i), hi.max(i)),
+        );
+        let window_start = lo.saturating_sub(25).min(self.lines.len());
+        let window_end = (hi + 25).min(self.lines.len().saturating_sub(1));
+        let window: Vec<String> = if !selected.is_empty() {
+            (window_start..=window_end)
+                .filter_map(|i| self.lines.get(i).map(|s| s.as_ref().to_string()))
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let (pod, namespace) = if let Some(label) = &self.pod_label {
+            let mut parts = label.splitn(2, '/');
+            match (parts.next(), parts.next()) {
+                (Some(ns), Some(p)) => (Some(p.to_string()), Some(ns.to_string())),
+                (Some(p), None)     => (Some(p.to_string()), None),
+                _                    => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        let container = self.containers.get(self.selected_container_ix).cloned();
+
+        LogRef { selected, window, pod, container, namespace }
     }
 
     /// Append a new log line; evicts oldest lines when at capacity.
@@ -100,6 +173,8 @@ impl LogViewerPanel {
     /// Clear all buffered lines.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.lines.clear();
+        self.selected_lines.clear();
+        self.last_clicked = None;
         cx.notify();
     }
 
@@ -111,6 +186,8 @@ impl LogViewerPanel {
         self.selected_container_ix = 0;
         self.lines.clear();
         self.paused = false;
+        self.selected_lines.clear();
+        self.last_clicked = None;
         cx.notify();
     }
 
@@ -138,6 +215,7 @@ impl LogViewerPanel {
 
 impl EventEmitter<PanelEvent> for LogViewerPanel {}
 impl EventEmitter<ContainerSelected> for LogViewerPanel {}
+impl EventEmitter<SendLogToAgent> for LogViewerPanel {}
 
 impl Focusable for LogViewerPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -165,8 +243,10 @@ impl Render for LogViewerPanel {
         let copied = self.copied_flash;
         let has_lines = !self.lines.is_empty();
         let line_count = self.lines.len();
+        let selected_count = self.selected_lines.len();
         // Clone is cheap — SharedString wraps an Arc.
         let lines = self.lines.clone();
+        let selected_lines = self.selected_lines.clone();
 
         if self.pod_label.is_none() {
             return div()
@@ -178,6 +258,9 @@ impl Render for LogViewerPanel {
                 .child("Logs available when a Pod is selected")
                 .into_any_element();
         }
+
+        // Weak handle used inside the uniform_list callback for line click handling.
+        let weak = cx.entity().downgrade();
 
         div().size_full().flex().flex_col()
             // ── Toolbar ───────────────────────────────────────────────────────
@@ -240,6 +323,35 @@ impl Render for LogViewerPanel {
                                 .into_any_element()
                         }
                     }))
+                    // "Send N lines to Agent" — only visible when lines are selected.
+                    .when(selected_count > 0, |row| {
+                        row.child(
+                            div()
+                                .cursor_pointer()
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(ACCENT)
+                                .hover(|s| s.bg(HOVER_BG))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.selected_lines.clear();
+                                        this.last_clicked = None;
+                                        cx.emit(SendLogToAgent);
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(
+                                    Label::new(SharedString::from(format!(
+                                        "⬡ Send {selected_count} lines to Agent"
+                                    )))
+                                    .text_xs()
+                                    .text_color(ACCENT),
+                                ),
+                        )
+                    })
                     // Pause / Resume
                     .child(
                         Button::new("pause-toggle")
@@ -277,7 +389,7 @@ impl Render for LogViewerPanel {
                         )
                     }),
             )
-            // ── Log lines — monospace text_sm for comfortable reading ─────────
+            // ── Log lines — monospace text_sm, click to select for Agent ──────
             .child(
                 uniform_list(
                     "log-lines",
@@ -285,12 +397,25 @@ impl Render for LogViewerPanel {
                     move |range, _window, _cx| {
                         range
                             .map(|ix| {
+                                let is_selected = selected_lines.contains(&ix);
+                                let w = weak.clone();
                                 div()
+                                    .id(("log-line", ix))
                                     .font_family("monospace")
                                     .text_sm()
                                     .text_color(TEXT_PRIMARY)
                                     .px_3()
                                     .whitespace_nowrap()
+                                    .cursor_pointer()
+                                    .when(is_selected, |el| el.bg(SELECTED_BG))
+                                    .when(!is_selected, |el| el.hover(|s| s.bg(HOVER_BG)))
+                                    .on_click(move |ev, _, cx| {
+                                        let shift = ev.modifiers().shift;
+                                        w.update(cx, |panel, cx| {
+                                            panel.toggle_line(ix, shift, cx);
+                                        })
+                                        .ok();
+                                    })
                                     .child(lines[ix].clone())
                             })
                             .collect()

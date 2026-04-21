@@ -5,6 +5,7 @@ mod app;
 mod components;
 mod kube_runtime;
 mod mcp_client;
+mod scope;
 mod theme;
 
 use app::Workspace;

@@ -2,11 +2,45 @@ use std::collections::BTreeMap;
 
 use chrono::Utc;
 use serde::Serialize;
-use k8s_openapi::api::apps::v1::Deployment as K8sDeployment;
+use k8s_openapi::api::apps::v1::{Deployment as K8sDeployment, ReplicaSet as K8sReplicaSet};
+use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler as K8sHpa;
 use k8s_openapi::api::core::v1::{
     ConfigMap as K8sConfigMap, ContainerState, ContainerStatus as K8sContainerStatus,
     Event as K8sEvent, Node as K8sNode, Pod, Service as K8sService,
 };
+use k8s_openapi::api::networking::v1::Ingress as K8sIngress;
+use k8s_openapi::api::storage::v1::StorageClass as K8sStorageClass;
+
+// ── Relationship types ────────────────────────────────────────────────────────
+
+/// Scope of a Kubernetes resource.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResourceScope {
+    Cluster,
+    Namespaced,
+    Embedded,
+}
+
+/// Directed relationship type between two resources.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RelationType {
+    References,
+    TargetedBy,
+    Selects,
+    RoutesTo,
+    BindsTo,
+    UsesStorageClass,
+    Targets,
+}
+
+/// A directed relationship from one tree node to another resource.
+#[derive(Debug, Clone)]
+pub struct ResourceRelationship {
+    pub rel_type: RelationType,
+    pub kind: String,
+    pub name: String,
+    pub namespace: Option<String>,
+}
 
 // ── PodSummary ────────────────────────────────────────────────────────────────
 
@@ -33,6 +67,10 @@ pub struct PodSummary {
     pub owner_kind: String,
     /// Name of the owning object. Empty if standalone.
     pub owner_name: String,
+    /// Names of containers defined in spec (for tree Container leaf nodes).
+    pub container_names: Vec<String>,
+    /// Resources referenced by this pod (SA, ConfigMaps, Secrets, PVCs from spec).
+    pub references: Vec<ResourceRelationship>,
 }
 
 impl From<Pod> for PodSummary {
@@ -72,8 +110,49 @@ impl From<Pod> for PodSummary {
             .and_then(|s| s.node_name.clone())
             .unwrap_or_default();
 
-        PodSummary { name, namespace, status, ready, restarts, age, node, labels, owner_kind, owner_name }
+        let container_names = pod.spec.as_ref()
+            .map(|s| s.containers.iter().map(|c| c.name.clone()).collect())
+            .unwrap_or_default();
+        let references = extract_pod_references(&pod);
+
+        PodSummary { name, namespace, status, ready, restarts, age, node, labels, owner_kind, owner_name, container_names, references }
     }
+}
+
+/// Extract cross-resource references from a pod spec (SA, ConfigMaps, Secrets, PVCs).
+fn extract_pod_references(pod: &Pod) -> Vec<ResourceRelationship> {
+    let mut refs = Vec::new();
+    let Some(spec) = pod.spec.as_ref() else { return refs };
+
+    if let Some(sa) = spec.service_account_name.as_deref() {
+        if !sa.is_empty() && sa != "default" {
+            refs.push(ResourceRelationship { rel_type: RelationType::References, kind: "ServiceAccount".to_string(), name: sa.to_string(), namespace: None });
+        }
+    }
+
+    for vol in spec.volumes.as_deref().unwrap_or(&[]) {
+        if let Some(cm) = &vol.config_map {
+            let n = cm.name.trim().to_string();
+            if !n.is_empty() {
+                refs.push(ResourceRelationship { rel_type: RelationType::References, kind: "ConfigMap".to_string(), name: n, namespace: None });
+            }
+        }
+        if let Some(secret) = &vol.secret {
+            if let Some(n) = secret.secret_name.as_deref() {
+                if !n.is_empty() {
+                    refs.push(ResourceRelationship { rel_type: RelationType::References, kind: "Secret".to_string(), name: n.to_string(), namespace: None });
+                }
+            }
+        }
+        if let Some(pvc) = &vol.persistent_volume_claim {
+            refs.push(ResourceRelationship { rel_type: RelationType::References, kind: "PersistentVolumeClaim".to_string(), name: pvc.claim_name.clone(), namespace: None });
+        }
+    }
+
+    // Dedup by kind + name
+    let mut seen = std::collections::HashSet::new();
+    refs.retain(|r| seen.insert((r.kind.clone(), r.name.clone())));
+    refs
 }
 
 /// Derive the display status string for a pod.
@@ -518,6 +597,8 @@ pub struct ServiceSummary {
     /// Formatted port list, e.g. "80/TCP,443:30443/TCP".
     pub ports: String,
     pub age: String,
+    /// Label selector used to match pods (for Selects relationship in tree).
+    pub selector: BTreeMap<String, String>,
 }
 
 impl From<K8sService> for ServiceSummary {
@@ -542,7 +623,8 @@ impl From<K8sService> for ServiceSummary {
                 }
             }).collect::<Vec<_>>().join(","))
             .unwrap_or_else(|| "<none>".to_string());
-        ServiceSummary { name, namespace, type_, cluster_ip, external_ip, ports,
+        let selector = spec.and_then(|s| s.selector.clone()).unwrap_or_default();
+        ServiceSummary { name, namespace, type_, cluster_ip, external_ip, ports, selector,
             age: age_from_ts(svc.metadata.creation_timestamp.as_ref()) }
     }
 }
@@ -716,23 +798,163 @@ pub fn fmt_memory(bytes: i64) -> String {
     else { format!("{} Ki", bytes / 1024) }
 }
 
+// ── ReplicaSetSummary ─────────────────────────────────────────────────────────
+
+/// Summary of a ReplicaSet for tree hierarchy (Deployment → RS → Pod).
+#[derive(Debug, Clone)]
+pub struct ReplicaSetSummary {
+    pub name: String,
+    pub namespace: String,
+    /// Name of the owning Deployment, if any.
+    pub owner_deployment: Option<String>,
+    pub ready: i32,
+    pub desired: i32,
+    pub age: String,
+}
+
+impl From<K8sReplicaSet> for ReplicaSetSummary {
+    fn from(rs: K8sReplicaSet) -> Self {
+        let name = rs.metadata.name.clone().unwrap_or_default();
+        let namespace = rs.metadata.namespace.clone().unwrap_or_default();
+        let owner_deployment = rs.metadata.owner_references.as_deref()
+            .and_then(|refs| refs.iter().find(|r| r.kind == "Deployment"))
+            .map(|r| r.name.clone());
+        let desired = rs.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+        let ready = rs.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0);
+        ReplicaSetSummary {
+            name,
+            namespace,
+            owner_deployment,
+            ready,
+            desired,
+            age: age_from_ts(rs.metadata.creation_timestamp.as_ref()),
+        }
+    }
+}
+
+// ── IngressSummary ────────────────────────────────────────────────────────────
+
+/// Summary of an Ingress resource, with backend service names for relationship wiring.
+#[derive(Debug, Clone)]
+pub struct IngressSummary {
+    pub name: String,
+    pub namespace: String,
+    /// Names of backend Services this ingress routes to.
+    pub backend_services: Vec<String>,
+    pub age: String,
+}
+
+impl From<K8sIngress> for IngressSummary {
+    fn from(ing: K8sIngress) -> Self {
+        let name = ing.metadata.name.clone().unwrap_or_default();
+        let namespace = ing.metadata.namespace.clone().unwrap_or_default();
+        let mut backend_services: Vec<String> = Vec::new();
+
+        if let Some(spec) = &ing.spec {
+            // Default backend
+            if let Some(default_be) = &spec.default_backend {
+                if let Some(svc) = &default_be.service {
+                    backend_services.push(svc.name.clone());
+                }
+            }
+            // Rule backends
+            for rule in spec.rules.as_deref().unwrap_or(&[]) {
+                if let Some(http) = &rule.http {
+                    for path in &http.paths {
+                        if let Some(svc) = &path.backend.service {
+                            backend_services.push(svc.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        backend_services.sort();
+        backend_services.dedup();
+        IngressSummary { name, namespace, backend_services, age: age_from_ts(ing.metadata.creation_timestamp.as_ref()) }
+    }
+}
+
+// ── HpaSummary ────────────────────────────────────────────────────────────────
+
+/// Summary of a HorizontalPodAutoscaler for relationship wiring.
+#[derive(Debug, Clone)]
+pub struct HpaSummary {
+    pub name: String,
+    pub namespace: String,
+    pub target_kind: String,
+    pub target_name: String,
+    pub min_replicas: i32,
+    pub max_replicas: i32,
+    pub current_replicas: i32,
+    pub age: String,
+}
+
+impl From<K8sHpa> for HpaSummary {
+    fn from(hpa: K8sHpa) -> Self {
+        let name = hpa.metadata.name.clone().unwrap_or_default();
+        let namespace = hpa.metadata.namespace.clone().unwrap_or_default();
+        let (target_kind, target_name, min_replicas, max_replicas) = hpa.spec.as_ref()
+            .map(|s| (
+                s.scale_target_ref.kind.clone(),
+                s.scale_target_ref.name.clone(),
+                s.min_replicas.unwrap_or(1),
+                s.max_replicas,
+            ))
+            .unwrap_or_default();
+        let current_replicas = hpa.status.as_ref().and_then(|s| s.current_replicas).unwrap_or(0);
+        HpaSummary {
+            name, namespace, target_kind, target_name,
+            min_replicas, max_replicas, current_replicas,
+            age: age_from_ts(hpa.metadata.creation_timestamp.as_ref()),
+        }
+    }
+}
+
+// ── StorageClassSummary ───────────────────────────────────────────────────────
+
+/// Summary of a cluster-scoped StorageClass.
+#[derive(Debug, Clone)]
+pub struct StorageClassSummary {
+    pub name: String,
+    pub provisioner: String,
+    pub reclaim_policy: String,
+    pub age: String,
+}
+
+impl From<K8sStorageClass> for StorageClassSummary {
+    fn from(sc: K8sStorageClass) -> Self {
+        StorageClassSummary {
+            name: sc.metadata.name.clone().unwrap_or_default(),
+            provisioner: sc.provisioner.clone(),
+            reclaim_policy: sc.reclaim_policy.clone().unwrap_or_else(|| "Delete".to_string()),
+            age: age_from_ts(sc.metadata.creation_timestamp.as_ref()),
+        }
+    }
+}
+
 // ── ResourceTree ──────────────────────────────────────────────────────────────
 
 /// The kind of a node in the hierarchical resource tree.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TreeNodeKind {
     ClusterRoot,
     Namespace,
     /// A synthetic folder grouping resources of one kind (e.g. "Deployments").
     KindGroup(String),
     Deployment,
+    ReplicaSet,
     StatefulSet,
     DaemonSet,
     Job,
     Pod,
+    /// Container embedded inside a Pod (non-selectable leaf).
+    Container,
     Service,
+    Ingress,
     ConfigMap,
     Node,
+    HorizontalPodAutoscaler,
+    StorageClass,
 }
 
 /// A single node in the hierarchical Kubernetes resource tree.
@@ -744,172 +966,309 @@ pub struct ResourceTreeNode {
     pub name: String,
     pub namespace: Option<String>,
     pub status: Option<String>,
+    pub scope: ResourceScope,
+    pub labels: BTreeMap<String, String>,
+    pub relationships: Vec<ResourceRelationship>,
     pub children: Vec<ResourceTreeNode>,
+}
+
+impl ResourceTreeNode {
+    fn leaf(id: String, kind: TreeNodeKind, name: String, namespace: Option<String>, status: Option<String>, scope: ResourceScope) -> Self {
+        Self { id, kind, name, namespace, status, scope, labels: BTreeMap::new(), relationships: vec![], children: vec![] }
+    }
+
+    fn group(id: String, label: &str, namespace: Option<String>, children: Vec<ResourceTreeNode>) -> Self {
+        Self {
+            id, kind: TreeNodeKind::KindGroup(label.to_string()), name: label.to_string(),
+            namespace, status: None, scope: ResourceScope::Cluster,
+            labels: BTreeMap::new(), relationships: vec![], children,
+        }
+    }
+}
+
+/// Check whether every key-value pair in `selector` is present in `labels`.
+fn selector_matches(selector: &BTreeMap<String, String>, labels: &BTreeMap<String, String>) -> bool {
+    selector.iter().all(|(k, v)| labels.get(k).map(|lv| lv == v).unwrap_or(false))
 }
 
 /// Build a hierarchical resource tree from flat watcher snapshots.
 ///
-/// The returned root has kind [`TreeNodeKind::ClusterRoot`]. Its children are
-/// a `Nodes` kind-group (cluster-scoped) followed by one `Namespace` node per
-/// namespace. Each namespace contains kind-group children for Deployments,
-/// Services, ConfigMaps, and standalone Pods. Deployments include their owned
-/// pods as children (inferred via the ReplicaSet-name prefix convention).
+/// Structure: ClusterRoot → [Cluster Resources group] [Nodes group] [Namespace…]
+/// Namespace → [Deployments group (→ RS → Pod → Container)] [Services] [Ingresses] [ConfigMaps] [Standalone Pods]
+#[allow(clippy::too_many_arguments)]
 pub fn build_resource_tree(
     cluster_name: &str,
     namespaces: &[String],
     pods: &[PodSummary],
     deployments: &[DeploymentSummary],
+    replica_sets: &[ReplicaSetSummary],
     services: &[ServiceSummary],
     configmaps: &[ConfigMapSummary],
     nodes: &[NodeSummary],
+    ingresses: &[IngressSummary],
+    hpas: &[HpaSummary],
+    storage_classes: &[StorageClassSummary],
 ) -> ResourceTreeNode {
     let mut cluster_children: Vec<ResourceTreeNode> = Vec::new();
 
-    // Cluster-scoped: Nodes kind-group
-    if !nodes.is_empty() {
-        let children: Vec<ResourceTreeNode> = nodes
+    // Cluster-scoped resources (StorageClasses)
+    if !storage_classes.is_empty() {
+        let sc_nodes: Vec<ResourceTreeNode> = storage_classes
             .iter()
-            .map(|n| ResourceTreeNode {
-                id: format!("node:{}", n.name),
-                kind: TreeNodeKind::Node,
-                name: n.name.clone(),
-                namespace: None,
-                status: Some(n.status.clone()),
-                children: vec![],
-            })
+            .map(|sc| ResourceTreeNode::leaf(
+                format!("sc:{}", sc.name),
+                TreeNodeKind::StorageClass,
+                sc.name.clone(),
+                None,
+                Some(sc.provisioner.clone()),
+                ResourceScope::Cluster,
+            ))
             .collect();
-        cluster_children.push(ResourceTreeNode {
-            id: "group:nodes".to_string(),
-            kind: TreeNodeKind::KindGroup("Nodes".to_string()),
-            name: "Nodes".to_string(),
-            namespace: None,
-            status: None,
-            children,
-        });
+        cluster_children.push(ResourceTreeNode::group("group:cluster-resources".to_string(), "Cluster Resources", None, sc_nodes));
+    }
+
+    // Cluster-scoped Nodes
+    if !nodes.is_empty() {
+        let node_children: Vec<ResourceTreeNode> = nodes
+            .iter()
+            .map(|n| ResourceTreeNode::leaf(
+                format!("node:{}", n.name),
+                TreeNodeKind::Node,
+                n.name.clone(),
+                None,
+                Some(n.status.clone()),
+                ResourceScope::Cluster,
+            ))
+            .collect();
+        cluster_children.push(ResourceTreeNode::group("group:nodes".to_string(), "Nodes", None, node_children));
     }
 
     // Per-namespace resources
     for ns in namespaces {
         let ns_pods: Vec<&PodSummary> = pods.iter().filter(|p| &p.namespace == ns).collect();
         let ns_deploys: Vec<&DeploymentSummary> = deployments.iter().filter(|d| &d.namespace == ns).collect();
+        let ns_rsets: Vec<&ReplicaSetSummary> = replica_sets.iter().filter(|r| &r.namespace == ns).collect();
         let ns_services: Vec<&ServiceSummary> = services.iter().filter(|s| &s.namespace == ns).collect();
         let ns_configmaps: Vec<&ConfigMapSummary> = configmaps.iter().filter(|c| &c.namespace == ns).collect();
+        let ns_ingresses: Vec<&IngressSummary> = ingresses.iter().filter(|i| &i.namespace == ns).collect();
+        let ns_hpas: Vec<&HpaSummary> = hpas.iter().filter(|h| &h.namespace == ns).collect();
 
         let mut ns_children: Vec<ResourceTreeNode> = Vec::new();
 
-        // Deployments with their RS-owned pods as children
+        // Build pod node helper (Pod → Container leaves)
+        let build_pod_node = |p: &&PodSummary| -> ResourceTreeNode {
+            let container_leaves: Vec<ResourceTreeNode> = p.container_names.iter().map(|cn| {
+                ResourceTreeNode::leaf(
+                    format!("container:{}/{}/{}", ns, p.name, cn),
+                    TreeNodeKind::Container,
+                    cn.clone(),
+                    Some(ns.clone()),
+                    None,
+                    ResourceScope::Embedded,
+                )
+            }).collect();
+            ResourceTreeNode {
+                id: format!("pod:{}/{}", ns, p.name),
+                kind: TreeNodeKind::Pod,
+                name: p.name.clone(),
+                namespace: Some(ns.clone()),
+                status: Some(p.status.clone()),
+                scope: ResourceScope::Namespaced,
+                labels: p.labels.clone(),
+                relationships: p.references.clone(),
+                children: container_leaves,
+            }
+        };
+
+        // Deployments → ReplicaSets → Pods → Containers
         if !ns_deploys.is_empty() {
             let deploy_nodes: Vec<ResourceTreeNode> = ns_deploys
                 .iter()
                 .map(|d| {
-                    let prefix = format!("{}-", d.name);
-                    let owned: Vec<ResourceTreeNode> = ns_pods
-                        .iter()
-                        .filter(|p| p.owner_kind == "ReplicaSet" && p.owner_name.starts_with(&prefix))
-                        .map(|p| ResourceTreeNode {
-                            id: format!("pod:{}/{}", ns, p.name),
-                            kind: TreeNodeKind::Pod,
-                            name: p.name.clone(),
+                    // Find HPAs targeting this deployment
+                    let hpa_rels: Vec<ResourceRelationship> = ns_hpas.iter()
+                        .filter(|h| h.target_kind == "Deployment" && h.target_name == d.name)
+                        .map(|h| ResourceRelationship {
+                            rel_type: RelationType::TargetedBy,
+                            kind: "HorizontalPodAutoscaler".to_string(),
+                            name: h.name.clone(),
                             namespace: Some(ns.clone()),
-                            status: Some(p.status.clone()),
-                            children: vec![],
                         })
                         .collect();
+
+                    // Find ReplicaSets owned by this Deployment
+                    let rs_nodes: Vec<ResourceTreeNode> = ns_rsets.iter()
+                        .filter(|r| r.owner_deployment.as_deref() == Some(d.name.as_str()))
+                        .map(|r| {
+                            // Pods owned by this RS
+                            let rs_pods: Vec<ResourceTreeNode> = ns_pods.iter()
+                                .filter(|p| p.owner_kind == "ReplicaSet" && p.owner_name == r.name)
+                                .map(build_pod_node)
+                                .collect();
+                            ResourceTreeNode {
+                                id: format!("rs:{}/{}", ns, r.name),
+                                kind: TreeNodeKind::ReplicaSet,
+                                name: r.name.clone(),
+                                namespace: Some(ns.clone()),
+                                status: Some(format!("{}/{}", r.ready, r.desired)),
+                                scope: ResourceScope::Namespaced,
+                                labels: BTreeMap::new(),
+                                relationships: vec![],
+                                children: rs_pods,
+                            }
+                        })
+                        .collect();
+
+                    // Fallback: if no RS data, attach pods directly using prefix heuristic
+                    let children = if rs_nodes.is_empty() {
+                        let prefix = format!("{}-", d.name);
+                        ns_pods.iter()
+                            .filter(|p| p.owner_kind == "ReplicaSet" && p.owner_name.starts_with(&prefix))
+                            .map(build_pod_node)
+                            .collect()
+                    } else {
+                        rs_nodes
+                    };
+
                     ResourceTreeNode {
                         id: format!("deploy:{}/{}", ns, d.name),
                         kind: TreeNodeKind::Deployment,
                         name: d.name.clone(),
                         namespace: Some(ns.clone()),
                         status: Some(d.ready.clone()),
-                        children: owned,
+                        scope: ResourceScope::Namespaced,
+                        labels: BTreeMap::new(),
+                        relationships: hpa_rels,
+                        children,
                     }
                 })
                 .collect();
-            ns_children.push(ResourceTreeNode {
-                id: format!("group:{}/deployments", ns),
-                kind: TreeNodeKind::KindGroup("Deployments".to_string()),
-                name: "Deployments".to_string(),
-                namespace: Some(ns.clone()),
-                status: None,
-                children: deploy_nodes,
-            });
+            ns_children.push(ResourceTreeNode::group(
+                format!("group:{}/deployments", ns),
+                "Deployments",
+                Some(ns.clone()),
+                deploy_nodes,
+            ));
         }
 
-        // Services
+        // Services (with Selects relationships computed from label selector)
         if !ns_services.is_empty() {
             let svc_nodes: Vec<ResourceTreeNode> = ns_services
                 .iter()
-                .map(|s| ResourceTreeNode {
-                    id: format!("svc:{}/{}", ns, s.name),
-                    kind: TreeNodeKind::Service,
-                    name: s.name.clone(),
-                    namespace: Some(ns.clone()),
-                    status: Some(s.type_.clone()),
-                    children: vec![],
+                .map(|s| {
+                    let selects_rels: Vec<ResourceRelationship> = if !s.selector.is_empty() {
+                        ns_pods.iter()
+                            .filter(|p| selector_matches(&s.selector, &p.labels))
+                            .map(|p| ResourceRelationship {
+                                rel_type: RelationType::Selects,
+                                kind: "Pod".to_string(),
+                                name: p.name.clone(),
+                                namespace: Some(ns.clone()),
+                            })
+                            .take(3) // cap at 3 to avoid overwhelming the badge list
+                            .collect()
+                    } else { vec![] };
+                    ResourceTreeNode {
+                        id: format!("svc:{}/{}", ns, s.name),
+                        kind: TreeNodeKind::Service,
+                        name: s.name.clone(),
+                        namespace: Some(ns.clone()),
+                        status: Some(s.type_.clone()),
+                        scope: ResourceScope::Namespaced,
+                        labels: BTreeMap::new(),
+                        relationships: selects_rels,
+                        children: vec![],
+                    }
                 })
                 .collect();
-            ns_children.push(ResourceTreeNode {
-                id: format!("group:{}/services", ns),
-                kind: TreeNodeKind::KindGroup("Services".to_string()),
-                name: "Services".to_string(),
-                namespace: Some(ns.clone()),
-                status: None,
-                children: svc_nodes,
-            });
+            ns_children.push(ResourceTreeNode::group(
+                format!("group:{}/services", ns),
+                "Services",
+                Some(ns.clone()),
+                svc_nodes,
+            ));
+        }
+
+        // Ingresses (with RoutesTo relationships)
+        if !ns_ingresses.is_empty() {
+            let ing_nodes: Vec<ResourceTreeNode> = ns_ingresses
+                .iter()
+                .map(|i| {
+                    let routes_rels: Vec<ResourceRelationship> = i.backend_services.iter()
+                        .map(|svc| ResourceRelationship {
+                            rel_type: RelationType::RoutesTo,
+                            kind: "Service".to_string(),
+                            name: svc.clone(),
+                            namespace: Some(ns.clone()),
+                        })
+                        .collect();
+                    ResourceTreeNode {
+                        id: format!("ing:{}/{}", ns, i.name),
+                        kind: TreeNodeKind::Ingress,
+                        name: i.name.clone(),
+                        namespace: Some(ns.clone()),
+                        status: None,
+                        scope: ResourceScope::Namespaced,
+                        labels: BTreeMap::new(),
+                        relationships: routes_rels,
+                        children: vec![],
+                    }
+                })
+                .collect();
+            ns_children.push(ResourceTreeNode::group(
+                format!("group:{}/ingresses", ns),
+                "Ingresses",
+                Some(ns.clone()),
+                ing_nodes,
+            ));
         }
 
         // ConfigMaps
         if !ns_configmaps.is_empty() {
             let cm_nodes: Vec<ResourceTreeNode> = ns_configmaps
                 .iter()
-                .map(|c| ResourceTreeNode {
-                    id: format!("cm:{}/{}", ns, c.name),
-                    kind: TreeNodeKind::ConfigMap,
-                    name: c.name.clone(),
-                    namespace: Some(ns.clone()),
-                    status: None,
-                    children: vec![],
-                })
+                .map(|c| ResourceTreeNode::leaf(
+                    format!("cm:{}/{}", ns, c.name),
+                    TreeNodeKind::ConfigMap,
+                    c.name.clone(),
+                    Some(ns.clone()),
+                    None,
+                    ResourceScope::Namespaced,
+                ))
                 .collect();
-            ns_children.push(ResourceTreeNode {
-                id: format!("group:{}/configmaps", ns),
-                kind: TreeNodeKind::KindGroup("ConfigMaps".to_string()),
-                name: "ConfigMaps".to_string(),
-                namespace: Some(ns.clone()),
-                status: None,
-                children: cm_nodes,
-            });
+            ns_children.push(ResourceTreeNode::group(
+                format!("group:{}/configmaps", ns),
+                "ConfigMaps",
+                Some(ns.clone()),
+                cm_nodes,
+            ));
         }
 
-        // Standalone pods — not owned by any known deployment via RS
+        // Standalone pods — not owned by any ReplicaSet that belongs to a known Deployment
+        let known_rs_names: std::collections::HashSet<&str> = ns_rsets.iter()
+            .filter(|r| r.owner_deployment.is_some())
+            .map(|r| r.name.as_str())
+            .collect();
         let remaining: Vec<ResourceTreeNode> = ns_pods
             .iter()
             .filter(|p| {
                 if p.owner_kind == "ReplicaSet" {
+                    !known_rs_names.contains(p.owner_name.as_str()) &&
                     !ns_deploys.iter().any(|d| p.owner_name.starts_with(&format!("{}-", d.name)))
                 } else {
                     true
                 }
             })
-            .map(|p| ResourceTreeNode {
-                id: format!("pod:{}/{}", ns, p.name),
-                kind: TreeNodeKind::Pod,
-                name: p.name.clone(),
-                namespace: Some(ns.clone()),
-                status: Some(p.status.clone()),
-                children: vec![],
-            })
+            .map(build_pod_node)
             .collect();
 
         if !remaining.is_empty() {
-            ns_children.push(ResourceTreeNode {
-                id: format!("group:{}/pods", ns),
-                kind: TreeNodeKind::KindGroup("Pods".to_string()),
-                name: "Pods".to_string(),
-                namespace: Some(ns.clone()),
-                status: None,
-                children: remaining,
-            });
+            ns_children.push(ResourceTreeNode::group(
+                format!("group:{}/pods", ns),
+                "Pods",
+                Some(ns.clone()),
+                remaining,
+            ));
         }
 
         if !ns_children.is_empty() {
@@ -919,6 +1278,9 @@ pub fn build_resource_tree(
                 name: ns.clone(),
                 namespace: None,
                 status: None,
+                scope: ResourceScope::Cluster,
+                labels: BTreeMap::new(),
+                relationships: vec![],
                 children: ns_children,
             });
         }
@@ -930,6 +1292,9 @@ pub fn build_resource_tree(
         name: cluster_name.to_string(),
         namespace: None,
         status: None,
+        scope: ResourceScope::Cluster,
+        labels: BTreeMap::new(),
+        relationships: vec![],
         children: cluster_children,
     }
 }

@@ -1,4 +1,4 @@
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::label::Label;
@@ -7,8 +7,8 @@ use gpui_component::text::TextView;
 use kairo_core::{
     fmt_cpu, fmt_memory,
     models::{
-        ConfigMapSummary, DeploymentSummary, GenericResourceDetail, NodeSummary, PodDetail,
-        ServiceSummary,
+        ClusterEvent, ConfigMapSummary, DeploymentSummary, GenericResourceDetail, NodeSummary,
+        PodDetail, ServiceSummary,
     },
 };
 
@@ -17,6 +17,18 @@ use crate::theme::{
     status_color, status_symbol, ACCENT, BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING,
     STATUS_RUNNING, SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
+
+/// Emitted when the user clicks "Send to Agent" after an event selected a resource.
+#[derive(Clone, Debug)]
+pub struct SendEventToAgent(pub ClusterEvent);
+
+/// Emitted when the user clicks "Analyze with Agent" for the currently displayed resource.
+#[derive(Clone, Debug)]
+pub struct AnalyzeResourceRequest {
+    pub kind: String,
+    pub name: String,
+    pub namespace: Option<String>,
+}
 
 /// Small inline chip that copies `value` to the clipboard on click.
 fn copy_chip(
@@ -61,23 +73,42 @@ pub enum ResourceDetail {
 pub struct DetailPanel {
     focus_handle: FocusHandle,
     detail: Option<ResourceDetail>,
+    /// Set when the detail panel was opened by clicking an event card body.
+    /// Enables the "Send to Agent" button in the action bar.
+    associated_event: Option<ClusterEvent>,
 }
 
 impl DetailPanel {
     pub fn new(cx: &mut App) -> Self {
-        Self { focus_handle: cx.focus_handle(), detail: None }
+        Self { focus_handle: cx.focus_handle(), detail: None, associated_event: None }
     }
 
     pub fn set_detail(&mut self, detail: ResourceDetail) {
         self.detail = Some(detail);
+        // New resource selection clears the event association — user must click event again.
+        self.associated_event = None;
     }
+
     pub fn clear_detail(&mut self) {
         self.detail = None;
+        self.associated_event = None;
+    }
+
+    /// Bind a cluster event to the current detail view (enables "Send to Agent" button).
+    /// Called by Workspace after opening a resource via an event card body click.
+    pub fn set_associated_event(&mut self, event: Option<ClusterEvent>) {
+        self.associated_event = event;
+    }
+
+    pub fn current_detail(&self) -> Option<&ResourceDetail> {
+        self.detail.as_ref()
     }
 }
 
 impl EventEmitter<PanelEvent> for DetailPanel {}
 impl EventEmitter<AnalyzeEventRequest> for DetailPanel {}
+impl EventEmitter<SendEventToAgent> for DetailPanel {}
+impl EventEmitter<AnalyzeResourceRequest> for DetailPanel {}
 
 impl Focusable for DetailPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle { self.focus_handle.clone() }
@@ -103,21 +134,114 @@ impl Render for DetailPanel {
                 .into_any_element();
         };
 
+        let detail = detail.clone();
+        let has_event = self.associated_event.is_some();
+
         div()
             .size_full()
             .flex()
             .flex_col()
-            .overflow_y_scrollbar()
-            .p_4()
-            .gap_4()
-            .child(match &detail {
-                ResourceDetail::Pod(d)        => render_pod(d, cx),
-                ResourceDetail::Deployment(d) => render_deployment(d),
-                ResourceDetail::Service(d)    => render_service(d),
-                ResourceDetail::ConfigMap(d)  => render_configmap(d),
-                ResourceDetail::Node(d)       => render_node(d),
-                ResourceDetail::Generic(d)    => render_generic(d),
-            })
+            // ── Action bar ────────────────────────────────────────────────────
+            .child(
+                h_flex()
+                    .px_3()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(BORDER)
+                    .flex_shrink_0()
+                    .gap_2()
+                    .child(div().flex_1())
+                    .when(has_event, |el| {
+                        el.child(
+                            div()
+                                .cursor_pointer()
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(BORDER)
+                                .hover(|s| s.bg(HOVER_BG))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        if let Some(ev) = this.associated_event.clone() {
+                                            cx.emit(SendEventToAgent(ev));
+                                        }
+                                    }),
+                                )
+                                .child(Label::new("⬡ Send to Agent").text_xs().text_color(ACCENT)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .cursor_pointer()
+                            .px(px(6.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(ACCENT)
+                            .hover(|s| s.bg(HOVER_BG))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    let req = match &this.detail {
+                                        Some(ResourceDetail::Pod(d)) => Some(AnalyzeResourceRequest {
+                                            kind: "Pod".to_string(),
+                                            name: d.summary.name.clone(),
+                                            namespace: Some(d.summary.namespace.clone()),
+                                        }),
+                                        Some(ResourceDetail::Deployment(d)) => Some(AnalyzeResourceRequest {
+                                            kind: "Deployment".to_string(),
+                                            name: d.name.clone(),
+                                            namespace: Some(d.namespace.clone()),
+                                        }),
+                                        Some(ResourceDetail::Service(d)) => Some(AnalyzeResourceRequest {
+                                            kind: "Service".to_string(),
+                                            name: d.name.clone(),
+                                            namespace: Some(d.namespace.clone()),
+                                        }),
+                                        Some(ResourceDetail::ConfigMap(d)) => Some(AnalyzeResourceRequest {
+                                            kind: "ConfigMap".to_string(),
+                                            name: d.name.clone(),
+                                            namespace: Some(d.namespace.clone()),
+                                        }),
+                                        Some(ResourceDetail::Node(d)) => Some(AnalyzeResourceRequest {
+                                            kind: "Node".to_string(),
+                                            name: d.name.clone(),
+                                            namespace: None,
+                                        }),
+                                        Some(ResourceDetail::Generic(d)) => Some(AnalyzeResourceRequest {
+                                            kind: d.kind.clone(),
+                                            name: d.name.clone(),
+                                            namespace: if d.namespace.is_empty() { None } else { Some(d.namespace.clone()) },
+                                        }),
+                                        None => None,
+                                    };
+                                    if let Some(req) = req {
+                                        cx.emit(req);
+                                    }
+                                }),
+                            )
+                            .child(Label::new("⬡ Analyze with Agent").text_xs().text_color(ACCENT)),
+                    ),
+            )
+            // ── Detail content ─────────────────────────────────────────────────
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .p_4()
+                    .gap_4()
+                    .child(match &detail {
+                        ResourceDetail::Pod(d)        => render_pod(d, cx),
+                        ResourceDetail::Deployment(d) => render_deployment(d),
+                        ResourceDetail::Service(d)    => render_service(d),
+                        ResourceDetail::ConfigMap(d)  => render_configmap(d),
+                        ResourceDetail::Node(d)       => render_node(d),
+                        ResourceDetail::Generic(d)    => render_generic(d),
+                    }),
+            )
             .into_any_element()
     }
 }

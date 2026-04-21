@@ -1,17 +1,21 @@
 use std::collections::HashMap;
 
 use futures::StreamExt;
-use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
+use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
 use k8s_openapi::api::core::v1::{
     ConfigMap, Event as K8sEvent, Namespace, Node, Pod, Service,
 };
+use k8s_openapi::api::networking::v1::Ingress;
+use k8s_openapi::api::storage::v1::StorageClass;
 use kube::{Api, runtime::watcher};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 
 use crate::{CoreError, KubeClient, models::{
-    ClusterEvent, ConfigMapSummary, DeploymentSummary, NodeSummary, PodSummary, ServiceSummary,
+    ClusterEvent, ConfigMapSummary, DeploymentSummary, HpaSummary, IngressSummary,
+    NodeSummary, PodSummary, ReplicaSetSummary, ServiceSummary, StorageClassSummary,
 }};
 
 /// Watch pods in the given namespace (or all namespaces if `None`) and send
@@ -305,6 +309,136 @@ impl NodeWatcher {
                     }
                     Ok(watcher::Event::InitDone) => true,
                     Err(e) => { warn!("node watcher: {e}"); false }
+                };
+                if snap && !send_snap(&store, &tx).await { break; }
+            }
+        })
+    }
+}
+
+// ── ReplicaSetWatcher ─────────────────────────────────────────────────────────
+
+/// Watches ReplicaSets cluster-wide and sends full sorted snapshots.
+pub struct ReplicaSetWatcher;
+
+impl ReplicaSetWatcher {
+    pub fn start(client: KubeClient, tx: mpsc::Sender<Vec<ReplicaSetSummary>>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let api: Api<ReplicaSet> = Api::all(client.client);
+            let mut store: HashMap<String, ReplicaSetSummary> = HashMap::new();
+            let mut stream = watcher(api, watcher::Config::default()).boxed();
+            while let Some(ev) = stream.next().await {
+                let snap = match ev {
+                    Ok(watcher::Event::Apply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), ReplicaSetSummary::from(r)); true
+                    }
+                    Ok(watcher::Event::Delete(r)) => {
+                        store.remove(&meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref())); true
+                    }
+                    Ok(watcher::Event::Init) => { store.clear(); false }
+                    Ok(watcher::Event::InitApply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), ReplicaSetSummary::from(r)); false
+                    }
+                    Ok(watcher::Event::InitDone) => true,
+                    Err(e) => { warn!("replicaset watcher: {e}"); false }
+                };
+                if snap && !send_snap(&store, &tx).await { break; }
+            }
+        })
+    }
+}
+
+// ── StorageClassWatcher ───────────────────────────────────────────────────────
+
+/// Watches StorageClasses (cluster-scoped) and sends full sorted snapshots.
+pub struct StorageClassWatcher;
+
+impl StorageClassWatcher {
+    pub fn start(client: KubeClient, tx: mpsc::Sender<Vec<StorageClassSummary>>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let api: Api<StorageClass> = Api::all(client.client);
+            let mut store: HashMap<String, StorageClassSummary> = HashMap::new();
+            let mut stream = watcher(api, watcher::Config::default()).boxed();
+            while let Some(ev) = stream.next().await {
+                let snap = match ev {
+                    Ok(watcher::Event::Apply(r)) => {
+                        let key = r.metadata.name.clone().unwrap_or_default();
+                        store.insert(key, StorageClassSummary::from(r)); true
+                    }
+                    Ok(watcher::Event::Delete(r)) => {
+                        store.remove(&r.metadata.name.unwrap_or_default()); true
+                    }
+                    Ok(watcher::Event::Init) => { store.clear(); false }
+                    Ok(watcher::Event::InitApply(r)) => {
+                        let key = r.metadata.name.clone().unwrap_or_default();
+                        store.insert(key, StorageClassSummary::from(r)); false
+                    }
+                    Ok(watcher::Event::InitDone) => true,
+                    Err(e) => { warn!("storageclass watcher: {e}"); false }
+                };
+                if snap && !send_snap(&store, &tx).await { break; }
+            }
+        })
+    }
+}
+
+// ── IngressWatcher ────────────────────────────────────────────────────────────
+
+/// Watches Ingresses cluster-wide and sends full sorted snapshots.
+pub struct IngressWatcher;
+
+impl IngressWatcher {
+    pub fn start(client: KubeClient, tx: mpsc::Sender<Vec<IngressSummary>>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let api: Api<Ingress> = Api::all(client.client);
+            let mut store: HashMap<String, IngressSummary> = HashMap::new();
+            let mut stream = watcher(api, watcher::Config::default()).boxed();
+            while let Some(ev) = stream.next().await {
+                let snap = match ev {
+                    Ok(watcher::Event::Apply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), IngressSummary::from(r)); true
+                    }
+                    Ok(watcher::Event::Delete(r)) => {
+                        store.remove(&meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref())); true
+                    }
+                    Ok(watcher::Event::Init) => { store.clear(); false }
+                    Ok(watcher::Event::InitApply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), IngressSummary::from(r)); false
+                    }
+                    Ok(watcher::Event::InitDone) => true,
+                    Err(e) => { warn!("ingress watcher: {e}"); false }
+                };
+                if snap && !send_snap(&store, &tx).await { break; }
+            }
+        })
+    }
+}
+
+// ── HpaWatcher ────────────────────────────────────────────────────────────────
+
+/// Watches HorizontalPodAutoscalers cluster-wide and sends full sorted snapshots.
+pub struct HpaWatcher;
+
+impl HpaWatcher {
+    pub fn start(client: KubeClient, tx: mpsc::Sender<Vec<HpaSummary>>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let api: Api<HorizontalPodAutoscaler> = Api::all(client.client);
+            let mut store: HashMap<String, HpaSummary> = HashMap::new();
+            let mut stream = watcher(api, watcher::Config::default()).boxed();
+            while let Some(ev) = stream.next().await {
+                let snap = match ev {
+                    Ok(watcher::Event::Apply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), HpaSummary::from(r)); true
+                    }
+                    Ok(watcher::Event::Delete(r)) => {
+                        store.remove(&meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref())); true
+                    }
+                    Ok(watcher::Event::Init) => { store.clear(); false }
+                    Ok(watcher::Event::InitApply(r)) => {
+                        store.insert(meta_key(r.metadata.namespace.as_deref(), r.metadata.name.as_deref()), HpaSummary::from(r)); false
+                    }
+                    Ok(watcher::Event::InitDone) => true,
+                    Err(e) => { warn!("hpa watcher: {e}"); false }
                 };
                 if snap && !send_snap(&store, &tx).await { break; }
             }

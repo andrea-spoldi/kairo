@@ -17,10 +17,14 @@ use gpui_component::{
     tooltip::Tooltip,
 };
 use kairo_core::{
-    ClusterEvent, ConfigMapSummary, DeploymentSummary, GenericResourceDetail, KubeClient,
-    NodeSummary, ServiceSummary, build_resource_tree,
+    ClusterEvent, ConfigMapSummary, DeploymentSummary, GenericResourceDetail, HpaSummary,
+    IngressSummary, KubeClient, NodeSummary, ReplicaSetSummary, ServiceSummary,
+    StorageClassSummary, build_resource_tree,
     models::PodSummary,
-    watchers::{ClusterEventWatcher, ConfigMapWatcher, DeploymentWatcher, NamespaceWatcher, NodeWatcher, ServiceWatcher},
+    watchers::{
+        ClusterEventWatcher, ConfigMapWatcher, DeploymentWatcher, HpaWatcher, IngressWatcher,
+        NamespaceWatcher, NodeWatcher, ReplicaSetWatcher, ServiceWatcher, StorageClassWatcher,
+    },
 };
 use tracing::{error, info};
 
@@ -33,13 +37,14 @@ use crate::{
     ai_client,
     analyze::AnalyzeEventRequest,
     mcp_client::{McpClient, McpTool},
+    scope::{AgentScope, EventRef, ResourceRef},
     components::{
         ai_panel::{AiPanel, AiSendMessage},
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
         command_palette::{CommandPalette, PaletteAction},
-        event_feed::{EventFeedPanel, EventResourceSelected},
-        log_viewer::{ContainerSelected, LogViewerPanel},
-        pod_detail::{DetailPanel, ResourceDetail},
+        event_feed::{EventBodyClicked, EventFeedPanel},
+        log_viewer::{ContainerSelected, LogViewerPanel, SendLogToAgent},
+        pod_detail::{AnalyzeResourceRequest, DetailPanel, ResourceDetail, SendEventToAgent},
         pod_list::{PodListPanel, PodSelected},
         resource_list::{
             ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ResourceSelected,
@@ -68,9 +73,13 @@ enum KubeEvent {
     Namespace(String),
     PodList(Vec<PodSummary>),
     DeploymentList(Vec<DeploymentSummary>),
+    ReplicaSetList(Vec<ReplicaSetSummary>),
     ServiceList(Vec<ServiceSummary>),
     ConfigMapList(Vec<ConfigMapSummary>),
     NodeList(Vec<NodeSummary>),
+    IngressList(Vec<IngressSummary>),
+    HpaList(Vec<HpaSummary>),
+    StorageClassList(Vec<StorageClassSummary>),
     PodDetail(kairo_core::models::PodDetail),
     /// YAML fetched for a resource — (panel title, yaml string).
     ResourceYaml(String, String),
@@ -174,9 +183,13 @@ pub struct Workspace {
     all_pods: Vec<PodSummary>,
     /// Full unfiltered lists for namespaced resources.
     all_deployments: Vec<DeploymentSummary>,
+    all_replica_sets: Vec<ReplicaSetSummary>,
     all_services: Vec<ServiceSummary>,
     all_configmaps: Vec<ConfigMapSummary>,
     all_nodes: Vec<NodeSummary>,
+    all_ingresses: Vec<IngressSummary>,
+    all_hpas: Vec<HpaSummary>,
+    all_storage_classes: Vec<StorageClassSummary>,
     /// Context names loaded from kubeconfig.
     contexts: Vec<SharedString>,
     /// Sorted list of namespace names seen from the current cluster.
@@ -202,6 +215,10 @@ pub struct Workspace {
     _poll_task: Task<()>,
     /// Latest internal alert shown in the status bar (auto-cleared after TTL).
     status_alert: Option<StatusAlert>,
+    /// Current AI agent investigation scope (None = free chat).
+    agent_scope: AgentScope,
+    /// The cluster event that was last clicked (used by Flow 1).
+    selected_event: Option<ClusterEvent>,
 }
 
 impl Workspace {
@@ -480,12 +497,16 @@ impl Workspace {
         )
         .detach();
 
-        // ── Subscribe to event-card body clicks → load resource in inspector ──
+        // ── Subscribe to event-card body clicks → load resource + store event ──
         cx.subscribe_in(
             &event_feed,
             window,
-            |this, _, event: &EventResourceSelected, window, cx| {
-                this.open_resource(&event.kind, &event.namespace, &event.name, window, cx);
+            |this, _, event: &EventBodyClicked, window, cx| {
+                let ev = &event.0;
+                this.open_resource(&ev.object_kind, &ev.namespace, &ev.object_name, window, cx);
+                this.selected_event = Some(ev.clone());
+                let ev_clone = ev.clone();
+                this.detail_panel.update(cx, |p, _| p.set_associated_event(Some(ev_clone)));
             },
         )
         .detach();
@@ -495,6 +516,58 @@ impl Workspace {
             window,
             |this, _, event: &AnalyzeEventRequest, window, cx| {
                 this.handle_analyze_event(event.0.clone(), window, cx);
+            },
+        )
+        .detach();
+
+        // ── Subscribe to "Send to Agent" from detail panel (Flow 1) ──────────
+        cx.subscribe_in(
+            &detail_panel,
+            window,
+            |this, _, event: &SendEventToAgent, window, cx| {
+                let ev = &event.0;
+                let resource_ref = ResourceRef {
+                    kind: ev.object_kind.clone(),
+                    name: ev.object_name.clone(),
+                    namespace: if ev.namespace.is_empty() { None } else { Some(ev.namespace.clone()) },
+                };
+                let event_ref = EventRef {
+                    reason: ev.reason.clone(),
+                    message: ev.message.clone(),
+                    event_type: ev.event_type.clone(),
+                    count: ev.count,
+                };
+                let scope = AgentScope::Event { resource: resource_ref, event: event_ref };
+                this.set_agent_scope(scope, window, cx);
+            },
+        )
+        .detach();
+
+        // ── Subscribe to "Analyze with Agent" from detail panel (Flow 2) ─────
+        cx.subscribe_in(
+            &detail_panel,
+            window,
+            |this, _, event: &AnalyzeResourceRequest, window, cx| {
+                let resource_ref = ResourceRef {
+                    kind: event.kind.clone(),
+                    name: event.name.clone(),
+                    namespace: event.namespace.clone(),
+                };
+                let scope = AgentScope::Resource(resource_ref);
+                this.set_agent_scope(scope, window, cx);
+            },
+        )
+        .detach();
+
+        // ── Subscribe to "Send to Agent" from log panel (Flow 3) ─────────────
+        cx.subscribe_in(
+            &log_panel,
+            window,
+            |this, _, _event: &SendLogToAgent, window, cx| {
+                let log_ref = this.log_panel.read(cx).build_log_context();
+                let resource_ref = this.selected_resource_ref(cx);
+                let scope = AgentScope::Log { log: log_ref, resource: resource_ref };
+                this.set_agent_scope(scope, window, cx);
             },
         )
         .detach();
@@ -541,9 +614,13 @@ impl Workspace {
             config,
             all_pods: Vec::new(),
             all_deployments: Vec::new(),
+            all_replica_sets: Vec::new(),
             all_services: Vec::new(),
             all_configmaps: Vec::new(),
             all_nodes: Vec::new(),
+            all_ingresses: Vec::new(),
+            all_hpas: Vec::new(),
+            all_storage_classes: Vec::new(),
             contexts: contexts.clone(),
             namespaces: Vec::new(),
             active_namespace: SharedString::from("All"),
@@ -558,6 +635,8 @@ impl Workspace {
             active_log_ns: None,
             _poll_task: poll_task,
             status_alert: None,
+            agent_scope: AgentScope::None,
+            selected_event: None,
         };
 
         // Connect to the current context
@@ -659,6 +738,22 @@ impl Workspace {
                 self.health_panel.update(cx, |_, cx| cx.notify());
                 self.all_deployments = items;
                 self.apply_namespace_filter(cx);
+                self.rebuild_tree(cx);
+            }
+            KubeEvent::ReplicaSetList(items) => {
+                self.all_replica_sets = items;
+                self.rebuild_tree(cx);
+            }
+            KubeEvent::IngressList(items) => {
+                self.all_ingresses = items;
+                self.rebuild_tree(cx);
+            }
+            KubeEvent::HpaList(items) => {
+                self.all_hpas = items;
+                self.rebuild_tree(cx);
+            }
+            KubeEvent::StorageClassList(items) => {
+                self.all_storage_classes = items;
                 self.rebuild_tree(cx);
             }
             KubeEvent::ServiceList(items) => {
@@ -823,8 +918,13 @@ impl Workspace {
         // Reset namespace and pod state.
         self.all_pods.clear();
         self.all_deployments.clear();
+        self.all_replica_sets.clear();
         self.all_services.clear();
         self.all_configmaps.clear();
+        self.all_nodes.clear();
+        self.all_ingresses.clear();
+        self.all_hpas.clear();
+        self.all_storage_classes.clear();
         self.namespaces.clear();
         self.active_namespace = SharedString::from("All");
         self.active_context = Some(SharedString::from(context.clone()));
@@ -841,7 +941,6 @@ impl Workspace {
             cx.notify();
         });
         self.stats_panel.update(cx, |p, cx| p.clear(cx));
-        self.all_nodes.clear();
         self.yaml_panel.update(cx, |panel, _| panel.clear());
         // Stop log stream and clear log panel.
         self.log_abort.store(true, Ordering::SeqCst);
@@ -953,10 +1052,14 @@ impl Workspace {
                         }};
                     }
 
-                    spawn_resource_watcher!(DeploymentWatcher, DeploymentList, "deployment");
-                    spawn_resource_watcher!(ServiceWatcher,    ServiceList,    "service");
-                    spawn_resource_watcher!(ConfigMapWatcher,  ConfigMapList,  "configmap");
-                    spawn_resource_watcher!(NodeWatcher,       NodeList,       "node");
+                    spawn_resource_watcher!(DeploymentWatcher,  DeploymentList,  "deployment");
+                    spawn_resource_watcher!(ReplicaSetWatcher,  ReplicaSetList,  "replicaset");
+                    spawn_resource_watcher!(ServiceWatcher,     ServiceList,     "service");
+                    spawn_resource_watcher!(ConfigMapWatcher,   ConfigMapList,   "configmap");
+                    spawn_resource_watcher!(NodeWatcher,        NodeList,        "node");
+                    spawn_resource_watcher!(IngressWatcher,     IngressList,     "ingress");
+                    spawn_resource_watcher!(HpaWatcher,         HpaList,         "hpa");
+                    spawn_resource_watcher!(StorageClassWatcher, StorageClassList, "storageclass");
                 }
                 Err(e) => {
                     events
@@ -1430,6 +1533,35 @@ impl Workspace {
         self.configmap_panel.update(cx, |p, cx| p.set_items(configmaps, cx));
     }
 
+    /// Set the AI agent investigation scope, push its context block, and open the bottom dock.
+    fn set_agent_scope(&mut self, scope: AgentScope, window: &mut Window, cx: &mut Context<Self>) {
+        self.agent_scope = scope.clone();
+        let context_block = scope.context_block();
+        self.ai_panel.update(cx, |p, cx| {
+            p.set_scope(scope, cx);
+            if !context_block.is_empty() {
+                p.push_system_context(context_block, cx);
+            }
+        });
+        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Bottom, cx) {
+            self.dock_area.update(cx, |dock, cx| {
+                dock.toggle_dock(DockPlacement::Bottom, window, cx);
+            });
+        }
+    }
+
+    /// Build a `ResourceRef` for whatever resource is currently shown in the detail panel.
+    fn selected_resource_ref(&self, cx: &App) -> Option<ResourceRef> {
+        self.detail_panel.read(cx).current_detail().map(|d| match d {
+            ResourceDetail::Pod(p)        => ResourceRef { kind: "Pod".to_string(),        name: p.summary.name.clone(),  namespace: Some(p.summary.namespace.clone()) },
+            ResourceDetail::Deployment(d) => ResourceRef { kind: "Deployment".to_string(), name: d.name.clone(),          namespace: Some(d.namespace.clone()) },
+            ResourceDetail::Service(s)    => ResourceRef { kind: "Service".to_string(),    name: s.name.clone(),          namespace: Some(s.namespace.clone()) },
+            ResourceDetail::ConfigMap(c)  => ResourceRef { kind: "ConfigMap".to_string(),  name: c.name.clone(),          namespace: Some(c.namespace.clone()) },
+            ResourceDetail::Node(n)       => ResourceRef { kind: "Node".to_string(),       name: n.name.clone(),          namespace: None },
+            ResourceDetail::Generic(g)    => ResourceRef { kind: g.kind.clone(),           name: g.name.clone(),          namespace: if g.namespace.is_empty() { None } else { Some(g.namespace.clone()) } },
+        })
+    }
+
     /// Rebuild and push the resource tree to the tree panel.
     fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
         let cluster_name = self.active_context.as_ref()
@@ -1441,9 +1573,13 @@ impl Workspace {
             &namespaces,
             &self.all_pods,
             &self.all_deployments,
+            &self.all_replica_sets,
             &self.all_services,
             &self.all_configmaps,
             &self.all_nodes,
+            &self.all_ingresses,
+            &self.all_hpas,
+            &self.all_storage_classes,
         );
         self.resource_tree_panel.update(cx, |panel, cx| panel.set_tree(root, cx));
     }
