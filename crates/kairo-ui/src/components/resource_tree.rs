@@ -3,13 +3,14 @@ use std::collections::HashSet;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::dock::{Panel, PanelControl, PanelEvent};
 use gpui_component::h_flex;
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
 use gpui_component::scroll::ScrollableElement;
 use kairo_core::models::{RelationType, ResourceRelationship, ResourceScope, ResourceTreeNode, TreeNodeKind};
 
 use crate::theme::{
-    HOVER_BG, SELECTED_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, TEXT_MUTED,
-    TEXT_PRIMARY, TEXT_SECONDARY,
+    BORDER, HOVER_BG, SELECTED_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING,
+    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
 // ── Public event ──────────────────────────────────────────────────────────────
@@ -47,20 +48,36 @@ pub struct ResourceTreePanel {
     root: Option<ResourceTreeNode>,
     /// Set of node IDs that are currently expanded.
     expanded: HashSet<String>,
+    /// IDs seen at least once — prevents re-expanding nodes the user has collapsed.
+    seen_ids: HashSet<String>,
     selected: Option<String>,
     /// Flattened, visible rows rebuilt on every expand/collapse or tree update.
     rows: Vec<FlatRow>,
     focus_handle: FocusHandle,
+    filter_input: Entity<InputState>,
+    filter: String,
 }
 
 impl ResourceTreePanel {
-    pub fn new(cx: &mut App) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter resources…"));
+        cx.subscribe(&filter_input, |this, state, ev: &InputEvent, cx| {
+            if let InputEvent::Change = ev {
+                this.filter = state.read(cx).value().to_string();
+                this.rebuild_rows();
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             root: None,
             expanded: HashSet::new(),
+            seen_ids: HashSet::new(),
             selected: None,
             rows: vec![],
             focus_handle: cx.focus_handle(),
+            filter_input,
+            filter: String::new(),
         }
     }
 
@@ -75,11 +92,14 @@ impl ResourceTreePanel {
     }
 
     fn auto_expand_defaults(&mut self, node: &ResourceTreeNode) {
-        match node.kind {
-            TreeNodeKind::ClusterRoot | TreeNodeKind::Namespace | TreeNodeKind::KindGroup(_) => {
-                self.expanded.insert(node.id.clone());
+        let first_time = self.seen_ids.insert(node.id.clone());
+        if first_time {
+            match node.kind {
+                TreeNodeKind::ClusterRoot | TreeNodeKind::Namespace | TreeNodeKind::KindGroup(_) => {
+                    self.expanded.insert(node.id.clone());
+                }
+                _ => {}
             }
-            _ => {}
         }
         for child in &node.children {
             self.auto_expand_defaults(child);
@@ -92,6 +112,10 @@ impl ResourceTreePanel {
             let expanded = &self.expanded;
             let mut rows = Vec::new();
             Self::collect_rows(root, 0, expanded, &mut rows);
+            if !self.filter.is_empty() {
+                let q = self.filter.to_lowercase();
+                rows.retain(|r| r.name.to_lowercase().contains(&q));
+            }
             self.rows = rows;
         }
     }
@@ -358,12 +382,32 @@ impl Render for ResourceTreePanel {
                     )
                 });
 
-            list = list.child(row_el);
+            // Namespace nodes get a subtle glass background wrapper.
+            if matches!(row.kind, TreeNodeKind::Namespace) {
+                list = list.child(
+                    div()
+                        .rounded(px(12.))
+                        .bg(Hsla { h: 0.0, s: 0.0, l: 1.0, a: 0.02 })
+                        .border_1()
+                        .border_color(BORDER)
+                        .child(row_el),
+                );
+            } else {
+                list = list.child(row_el);
+            }
         }
 
         div()
             .size_full()
-            .overflow_y_scrollbar()
-            .child(list)
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(6.))
+                    .flex_shrink_0()
+                    .child(Input::new(&self.filter_input)),
+            )
+            .child(div().flex_1().overflow_y_scrollbar().child(list))
     }
 }

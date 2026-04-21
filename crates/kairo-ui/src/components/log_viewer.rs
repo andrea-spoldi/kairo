@@ -9,7 +9,20 @@ use gpui_component::h_flex;
 use gpui_component::label::Label;
 
 use crate::scope::LogRef;
-use crate::theme::{ACCENT, BORDER, HOVER_BG, SELECTED_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
+use crate::theme::{
+    ACCENT, BG_INSET, BG_RAISED, BORDER, HOVER_BG, LOG_ERROR, LOG_WARN, LOG_INFO,
+    SELECTED_BG, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+};
+
+fn log_line_color(line: &str) -> Hsla {
+    if line.contains(" ERROR ") || line.contains(" FATAL ") {
+        LOG_ERROR
+    } else if line.contains(" WARN ") || line.contains(" WARNING ") {
+        LOG_WARN
+    } else {
+        LOG_INFO
+    }
+}
 
 const MAX_LINES: usize = 5_000;
 
@@ -263,6 +276,10 @@ impl Render for LogViewerPanel {
         let weak = cx.entity().downgrade();
 
         div().size_full().flex().flex_col()
+            .rounded(px(20.))
+            .border_1()
+            .border_color(BORDER)
+            .bg(BG_INSET)
             // ── Toolbar ───────────────────────────────────────────────────────
             .child(
                 h_flex()
@@ -271,6 +288,8 @@ impl Render for LogViewerPanel {
                     .gap_2()
                     .border_b_1()
                     .border_color(BORDER)
+                    .bg(BG_RAISED)
+                    .rounded_t(px(20.))
                     .flex_shrink_0()
                     // Pod label
                     .child(
@@ -399,11 +418,12 @@ impl Render for LogViewerPanel {
                             .map(|ix| {
                                 let is_selected = selected_lines.contains(&ix);
                                 let w = weak.clone();
+                                let line_color = log_line_color(lines[ix].as_ref());
                                 div()
                                     .id(("log-line", ix))
                                     .font_family("monospace")
                                     .text_sm()
-                                    .text_color(TEXT_PRIMARY)
+                                    .text_color(line_color)
                                     .px_3()
                                     .whitespace_nowrap()
                                     .cursor_pointer()

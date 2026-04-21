@@ -12,8 +12,8 @@ use serde::Deserialize;
 use crate::ai_client::ChatMessage;
 use crate::scope::AgentScope;
 use crate::theme::{
-    ACCENT, BORDER, HOVER_BG, SELECTED_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING,
-    SURFACE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    ACCENT, ACCENT_BG, ACCENT_BORDER, BORDER, HEALTH_ERR, HEALTH_OK, HEALTH_WARN,
+    HOVER_BG, SURFACE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
 // ── Events ─────────────────────────────────────────────────────────────────────
@@ -275,8 +275,6 @@ impl Panel for AiPanel {
 impl Render for AiPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let streaming = self.streaming_buffer.clone();
-        let context_label = self.context_text.as_deref().map(|c| SharedString::from(format!("⬡ {c}")))
-            .unwrap_or_else(|| SharedString::from("No resource selected"));
         let is_streaming = self.is_streaming();
         let messages_empty = self.messages.is_empty();
         let streaming_none = streaming.is_none();
@@ -299,11 +297,6 @@ impl Render for AiPanel {
                     .border_b_1()
                     .border_color(BORDER)
                     .flex_shrink_0()
-                    .child(
-                        Label::new(context_label)
-                            .text_xs()
-                            .text_color(TEXT_MUTED),
-                    )
                     .child(div().flex_1())
                     // MCP tools badge — only shown when at least one tool is active.
                     .when(mcp_tool_count > 0, |el| {
@@ -311,11 +304,11 @@ impl Render for AiPanel {
                             h_flex()
                                 .gap(px(3.))
                                 .items_center()
-                                .child(Label::new("⬡").text_xs().text_color(STATUS_PENDING))
+                                .child(Label::new("⬡").text_xs().text_color(HEALTH_OK))
                                 .child(
                                     Label::new(SharedString::from(format!("{mcp_tool_count} tools")))
                                         .text_xs()
-                                        .text_color(STATUS_PENDING),
+                                        .text_color(HEALTH_OK),
                                 ),
                         )
                     })
@@ -354,7 +347,9 @@ impl Render for AiPanel {
                                         .px_2()
                                         .py(px(2.))
                                         .rounded(px(10.))
-                                        .bg(SELECTED_BG)
+                                        .border_1()
+                                        .border_color(ACCENT_BORDER)
+                                        .bg(ACCENT_BG)
                                         .text_xs()
                                         .text_color(TEXT_SECONDARY)
                                         .child(SharedString::from(label)),
@@ -377,12 +372,15 @@ impl Render for AiPanel {
                                 ),
                         )
                         .when(!quick_actions.is_empty(), |el| {
+                            let weak = cx.entity().downgrade();
                             el.child(
                                 h_flex()
                                     .gap(px(4.))
                                     .flex_wrap()
-                                    .children(quick_actions.into_iter().map(|action| {
+                                    .children(quick_actions.into_iter().enumerate().map(|(i, action)| {
+                                        let w = weak.clone();
                                         div()
+                                            .id(("quick-action", i))
                                             .px_2()
                                             .py(px(2.))
                                             .rounded(px(8.))
@@ -392,6 +390,11 @@ impl Render for AiPanel {
                                             .hover(|s| s.bg(HOVER_BG))
                                             .text_xs()
                                             .text_color(TEXT_MUTED)
+                                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                                w.update(cx, |this, cx| {
+                                                    this.emit_send(action.to_string(), cx);
+                                                }).ok();
+                                            })
                                             .child(action)
                                     })),
                             )
@@ -449,7 +452,94 @@ impl Render for AiPanel {
     }
 }
 
-// ── Analysis response model ────────────────────────────────────────────────────
+// ── Text-based structured analysis (G2) ───────────────────────────────────────
+
+#[derive(Clone)]
+enum Confidence { High, Medium, Low }
+
+#[derive(Clone)]
+struct TextHypothesis {
+    title: String,
+    confidence: Confidence,
+    evidence: Vec<String>,
+}
+
+#[derive(Clone)]
+struct ParsedAnalysis {
+    hypotheses: Vec<TextHypothesis>,
+    next_checks: Vec<String>,
+}
+
+fn parse_analysis(text: &str) -> Option<ParsedAnalysis> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("HYPOTHESIS") {
+        return None;
+    }
+
+    let mut hypotheses = Vec::new();
+    let mut next_checks = Vec::new();
+    let mut in_next_checks = false;
+    let mut current_title = String::new();
+    let mut current_conf = Confidence::Low;
+    let mut current_evidence: Vec<String> = Vec::new();
+    let mut in_hypothesis = false;
+
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.starts_with("HYPOTHESIS") {
+            if in_hypothesis && !current_title.is_empty() {
+                hypotheses.push(TextHypothesis {
+                    title: current_title.clone(),
+                    confidence: current_conf.clone(),
+                    evidence: current_evidence.clone(),
+                });
+            }
+            current_title.clear();
+            current_evidence.clear();
+            current_conf = Confidence::Low;
+            in_hypothesis = true;
+            in_next_checks = false;
+        } else if line == "NEXT CHECKS" {
+            if in_hypothesis && !current_title.is_empty() {
+                hypotheses.push(TextHypothesis {
+                    title: current_title.clone(),
+                    confidence: current_conf.clone(),
+                    evidence: current_evidence.clone(),
+                });
+                in_hypothesis = false;
+            }
+            in_next_checks = true;
+        } else if in_hypothesis {
+            if let Some(title) = line.strip_prefix("Title: ") {
+                current_title = title.to_string();
+            } else if let Some(conf) = line.strip_prefix("Confidence: ") {
+                current_conf = match conf.trim() {
+                    "High" => Confidence::High,
+                    "Medium" => Confidence::Medium,
+                    _ => Confidence::Low,
+                };
+            } else if let Some(bullet) = line.strip_prefix("- ") {
+                current_evidence.push(bullet.to_string());
+            }
+        } else if in_next_checks {
+            if let Some(check) = line.strip_prefix("- ") {
+                next_checks.push(check.to_string());
+            }
+        }
+    }
+
+    if in_hypothesis && !current_title.is_empty() {
+        hypotheses.push(TextHypothesis {
+            title: current_title,
+            confidence: current_conf,
+            evidence: current_evidence,
+        });
+    }
+
+    if hypotheses.is_empty() { None } else { Some(ParsedAnalysis { hypotheses, next_checks }) }
+}
+
+// ── JSON-based analysis response model ────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct AnalysisResponse {
@@ -515,9 +605,9 @@ fn try_parse_analysis(content: &str) -> Option<AnalysisResponse> {
 
 fn confidence_color(level: &str) -> Hsla {
     match level.to_lowercase().as_str() {
-        "high" => STATUS_RUNNING,
-        "medium" => STATUS_PENDING,
-        _ => STATUS_FAILED,
+        "high" => HEALTH_OK,
+        "medium" => HEALTH_WARN,
+        _ => HEALTH_ERR,
     }
 }
 
@@ -530,7 +620,7 @@ fn render_entry(ix: usize, entry: ChatEntry) -> impl IntoElement {
             .gap(px(4.))
             .items_center()
             .py(px(2.))
-            .child(Label::new("⬡").text_xs().text_color(STATUS_PENDING))
+            .child(Label::new("⬡").text_xs().text_color(HEALTH_WARN))
             .child(
                 Label::new(SharedString::from(format!("Calling {}…", entry.content)))
                     .text_xs()
@@ -543,7 +633,7 @@ fn render_entry(ix: usize, entry: ChatEntry) -> impl IntoElement {
         AiRole::User => ("You", ACCENT, rgba(0x313244AA), true),
         AiRole::Assistant => ("Kairo AI", TEXT_SECONDARY, rgba(0x1E1E2E00), false),
         AiRole::ToolCall => unreachable!(),
-        AiRole::Error => ("Error", STATUS_FAILED, rgba(0x3D1515AA), false),
+        AiRole::Error => ("Error", HEALTH_ERR, rgba(0x3D1515AA), false),
     };
 
     if align_right {
@@ -569,7 +659,11 @@ fn render_entry(ix: usize, entry: ChatEntry) -> impl IntoElement {
             .child(copy_chip_button(content_copy))
             .into_any_element()
     } else if entry.role == AiRole::Assistant {
-        // Try structured rendering for analysis responses.
+        // Text-based HYPOTHESIS format takes priority (G2/G3).
+        if let Some(parsed) = parse_analysis(&entry.content) {
+            return render_parsed_analysis(parsed);
+        }
+        // Fall back to JSON-based analysis, then plain markdown.
         if let Some(analysis) = try_parse_analysis(&entry.content) {
             return render_analysis_entry(analysis);
         }
@@ -727,11 +821,113 @@ fn render_analysis_entry(analysis: AnalysisResponse) -> AnyElement {
     root.into_any_element()
 }
 
-/// Returns `true` when the streaming buffer looks like structured analysis JSON
-/// (raw `{…` or markdown-fenced ````json`). In that case we hide the raw tokens
-/// and show a friendly placeholder instead.
-fn looks_like_analysis_json(buf: &str) -> bool {
+fn render_parsed_analysis(analysis: ParsedAnalysis) -> AnyElement {
+    let mut root = div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(8.))
+        .child(Label::new("AI").text_xs().text_color(TEXT_SECONDARY));
+
+    // ── Hypothesis cards ──────────────────────────────────────────────────────
+    for h in &analysis.hypotheses {
+        let (conf_label, conf_color) = match h.confidence {
+            Confidence::High   => ("HIGH",   HEALTH_OK),
+            Confidence::Medium => ("MED",    HEALTH_WARN),
+            Confidence::Low    => ("LOW",    TEXT_MUTED),
+        };
+
+        let mut card = div()
+            .w_full()
+            .rounded(px(16.))
+            .border_1()
+            .border_color(ACCENT_BORDER)
+            .bg(ACCENT_BG)
+            .px(px(12.))
+            .py(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            // ── Title + confidence badge ───────────────────────────────────────
+            .child(
+                h_flex()
+                    .gap(px(8.))
+                    .items_start()
+                    .child(
+                        Label::new(SharedString::from(h.title.clone()))
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(TEXT_PRIMARY),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(4.))
+                            .bg(conf_color.opacity(0.15))
+                            .flex_shrink_0()
+                            .child(
+                                Label::new(conf_label)
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(conf_color),
+                            ),
+                    ),
+            );
+
+        // Evidence bullets
+        for item in &h.evidence {
+            card = card.child(
+                Label::new(SharedString::from(format!("• {item}")))
+                    .text_xs()
+                    .text_color(TEXT_SECONDARY),
+            );
+        }
+
+        root = root.child(card);
+    }
+
+    // ── Next checks card ──────────────────────────────────────────────────────
+    if !analysis.next_checks.is_empty() {
+        let mut checks_card = div()
+            .w_full()
+            .rounded(px(16.))
+            .border_1()
+            .border_color(BORDER)
+            .px(px(12.))
+            .py(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(
+                Label::new("NEXT CHECKS")
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(TEXT_MUTED),
+            );
+
+        for check in &analysis.next_checks {
+            checks_card = checks_card.child(
+                Label::new(SharedString::from(format!("• {check}")))
+                    .text_sm()
+                    .text_color(TEXT_PRIMARY),
+            );
+        }
+
+        root = root.child(checks_card);
+    }
+
+    root.into_any_element()
+}
+
+/// Returns `true` when the streaming buffer looks like structured analysis
+/// (HYPOTHESIS text format or JSON). Hides raw tokens and shows a placeholder.
+fn looks_like_analysis(buf: &str) -> bool {
     let trimmed = buf.trim_start();
+    if trimmed.starts_with("HYPOTHESIS") {
+        return true;
+    }
     if trimmed.starts_with("```json") || trimmed.starts_with("```\n{") {
         return true;
     }
@@ -742,7 +938,7 @@ fn looks_like_analysis_json(buf: &str) -> bool {
 }
 
 fn render_streaming_entry(buf: String) -> impl IntoElement {
-    if looks_like_analysis_json(&buf) {
+    if looks_like_analysis(&buf) {
         return div()
             .flex()
             .flex_col()
@@ -757,7 +953,7 @@ fn render_streaming_entry(buf: String) -> impl IntoElement {
                     .rounded(px(8.))
                     .rounded_tl(px(2.))
                     .text_sm()
-                    .text_color(STATUS_PENDING)
+                    .text_color(HEALTH_WARN)
                     .child(SharedString::from("Analyzing situation… ▊")),
             )
             .into_any_element();
