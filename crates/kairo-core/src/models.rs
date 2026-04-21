@@ -716,6 +716,224 @@ pub fn fmt_memory(bytes: i64) -> String {
     else { format!("{} Ki", bytes / 1024) }
 }
 
+// ── ResourceTree ──────────────────────────────────────────────────────────────
+
+/// The kind of a node in the hierarchical resource tree.
+#[derive(Debug, Clone)]
+pub enum TreeNodeKind {
+    ClusterRoot,
+    Namespace,
+    /// A synthetic folder grouping resources of one kind (e.g. "Deployments").
+    KindGroup(String),
+    Deployment,
+    StatefulSet,
+    DaemonSet,
+    Job,
+    Pod,
+    Service,
+    ConfigMap,
+    Node,
+}
+
+/// A single node in the hierarchical Kubernetes resource tree.
+#[derive(Debug, Clone)]
+pub struct ResourceTreeNode {
+    /// Unique stable ID, e.g. `"deploy:default/nginx"`.
+    pub id: String,
+    pub kind: TreeNodeKind,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub status: Option<String>,
+    pub children: Vec<ResourceTreeNode>,
+}
+
+/// Build a hierarchical resource tree from flat watcher snapshots.
+///
+/// The returned root has kind [`TreeNodeKind::ClusterRoot`]. Its children are
+/// a `Nodes` kind-group (cluster-scoped) followed by one `Namespace` node per
+/// namespace. Each namespace contains kind-group children for Deployments,
+/// Services, ConfigMaps, and standalone Pods. Deployments include their owned
+/// pods as children (inferred via the ReplicaSet-name prefix convention).
+pub fn build_resource_tree(
+    cluster_name: &str,
+    namespaces: &[String],
+    pods: &[PodSummary],
+    deployments: &[DeploymentSummary],
+    services: &[ServiceSummary],
+    configmaps: &[ConfigMapSummary],
+    nodes: &[NodeSummary],
+) -> ResourceTreeNode {
+    let mut cluster_children: Vec<ResourceTreeNode> = Vec::new();
+
+    // Cluster-scoped: Nodes kind-group
+    if !nodes.is_empty() {
+        let children: Vec<ResourceTreeNode> = nodes
+            .iter()
+            .map(|n| ResourceTreeNode {
+                id: format!("node:{}", n.name),
+                kind: TreeNodeKind::Node,
+                name: n.name.clone(),
+                namespace: None,
+                status: Some(n.status.clone()),
+                children: vec![],
+            })
+            .collect();
+        cluster_children.push(ResourceTreeNode {
+            id: "group:nodes".to_string(),
+            kind: TreeNodeKind::KindGroup("Nodes".to_string()),
+            name: "Nodes".to_string(),
+            namespace: None,
+            status: None,
+            children,
+        });
+    }
+
+    // Per-namespace resources
+    for ns in namespaces {
+        let ns_pods: Vec<&PodSummary> = pods.iter().filter(|p| &p.namespace == ns).collect();
+        let ns_deploys: Vec<&DeploymentSummary> = deployments.iter().filter(|d| &d.namespace == ns).collect();
+        let ns_services: Vec<&ServiceSummary> = services.iter().filter(|s| &s.namespace == ns).collect();
+        let ns_configmaps: Vec<&ConfigMapSummary> = configmaps.iter().filter(|c| &c.namespace == ns).collect();
+
+        let mut ns_children: Vec<ResourceTreeNode> = Vec::new();
+
+        // Deployments with their RS-owned pods as children
+        if !ns_deploys.is_empty() {
+            let deploy_nodes: Vec<ResourceTreeNode> = ns_deploys
+                .iter()
+                .map(|d| {
+                    let prefix = format!("{}-", d.name);
+                    let owned: Vec<ResourceTreeNode> = ns_pods
+                        .iter()
+                        .filter(|p| p.owner_kind == "ReplicaSet" && p.owner_name.starts_with(&prefix))
+                        .map(|p| ResourceTreeNode {
+                            id: format!("pod:{}/{}", ns, p.name),
+                            kind: TreeNodeKind::Pod,
+                            name: p.name.clone(),
+                            namespace: Some(ns.clone()),
+                            status: Some(p.status.clone()),
+                            children: vec![],
+                        })
+                        .collect();
+                    ResourceTreeNode {
+                        id: format!("deploy:{}/{}", ns, d.name),
+                        kind: TreeNodeKind::Deployment,
+                        name: d.name.clone(),
+                        namespace: Some(ns.clone()),
+                        status: Some(d.ready.clone()),
+                        children: owned,
+                    }
+                })
+                .collect();
+            ns_children.push(ResourceTreeNode {
+                id: format!("group:{}/deployments", ns),
+                kind: TreeNodeKind::KindGroup("Deployments".to_string()),
+                name: "Deployments".to_string(),
+                namespace: Some(ns.clone()),
+                status: None,
+                children: deploy_nodes,
+            });
+        }
+
+        // Services
+        if !ns_services.is_empty() {
+            let svc_nodes: Vec<ResourceTreeNode> = ns_services
+                .iter()
+                .map(|s| ResourceTreeNode {
+                    id: format!("svc:{}/{}", ns, s.name),
+                    kind: TreeNodeKind::Service,
+                    name: s.name.clone(),
+                    namespace: Some(ns.clone()),
+                    status: Some(s.type_.clone()),
+                    children: vec![],
+                })
+                .collect();
+            ns_children.push(ResourceTreeNode {
+                id: format!("group:{}/services", ns),
+                kind: TreeNodeKind::KindGroup("Services".to_string()),
+                name: "Services".to_string(),
+                namespace: Some(ns.clone()),
+                status: None,
+                children: svc_nodes,
+            });
+        }
+
+        // ConfigMaps
+        if !ns_configmaps.is_empty() {
+            let cm_nodes: Vec<ResourceTreeNode> = ns_configmaps
+                .iter()
+                .map(|c| ResourceTreeNode {
+                    id: format!("cm:{}/{}", ns, c.name),
+                    kind: TreeNodeKind::ConfigMap,
+                    name: c.name.clone(),
+                    namespace: Some(ns.clone()),
+                    status: None,
+                    children: vec![],
+                })
+                .collect();
+            ns_children.push(ResourceTreeNode {
+                id: format!("group:{}/configmaps", ns),
+                kind: TreeNodeKind::KindGroup("ConfigMaps".to_string()),
+                name: "ConfigMaps".to_string(),
+                namespace: Some(ns.clone()),
+                status: None,
+                children: cm_nodes,
+            });
+        }
+
+        // Standalone pods — not owned by any known deployment via RS
+        let remaining: Vec<ResourceTreeNode> = ns_pods
+            .iter()
+            .filter(|p| {
+                if p.owner_kind == "ReplicaSet" {
+                    !ns_deploys.iter().any(|d| p.owner_name.starts_with(&format!("{}-", d.name)))
+                } else {
+                    true
+                }
+            })
+            .map(|p| ResourceTreeNode {
+                id: format!("pod:{}/{}", ns, p.name),
+                kind: TreeNodeKind::Pod,
+                name: p.name.clone(),
+                namespace: Some(ns.clone()),
+                status: Some(p.status.clone()),
+                children: vec![],
+            })
+            .collect();
+
+        if !remaining.is_empty() {
+            ns_children.push(ResourceTreeNode {
+                id: format!("group:{}/pods", ns),
+                kind: TreeNodeKind::KindGroup("Pods".to_string()),
+                name: "Pods".to_string(),
+                namespace: Some(ns.clone()),
+                status: None,
+                children: remaining,
+            });
+        }
+
+        if !ns_children.is_empty() {
+            cluster_children.push(ResourceTreeNode {
+                id: format!("ns:{}", ns),
+                kind: TreeNodeKind::Namespace,
+                name: ns.clone(),
+                namespace: None,
+                status: None,
+                children: ns_children,
+            });
+        }
+    }
+
+    ResourceTreeNode {
+        id: format!("cluster:{}", cluster_name),
+        kind: TreeNodeKind::ClusterRoot,
+        name: cluster_name.to_string(),
+        namespace: None,
+        status: None,
+        children: cluster_children,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

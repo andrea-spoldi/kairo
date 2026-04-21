@@ -18,7 +18,7 @@ use gpui_component::{
 };
 use kairo_core::{
     ClusterEvent, ConfigMapSummary, DeploymentSummary, GenericResourceDetail, KubeClient,
-    NodeSummary, ServiceSummary,
+    NodeSummary, ServiceSummary, build_resource_tree,
     models::PodSummary,
     watchers::{ClusterEventWatcher, ConfigMapWatcher, DeploymentWatcher, NamespaceWatcher, NodeWatcher, ServiceWatcher},
 };
@@ -45,6 +45,7 @@ use crate::{
             ConfigMapListPanel, DeploymentListPanel, NodeListPanel, ResourceSelected,
             ServiceListPanel,
         },
+        resource_tree::{ResourceTreePanel, TreeNodeSelected},
         settings_panel::{McpTestRequest, SettingsPanel, SettingsSaved},
         stats_panel::StatsPanel,
         yaml_viewer::{yaml_title, YamlViewerPanel},
@@ -57,7 +58,7 @@ use crate::{
 };
 
 const DOCK_ID: &str = "kairo-dock";
-const DOCK_VERSION: usize = 6;
+const DOCK_VERSION: usize = 7;
 const POLL_INTERVAL_MS: u64 = 100;
 
 // ── Event queue shared between the tokio kube tasks and the GPUI poll loop ──
@@ -152,6 +153,7 @@ pub struct Workspace {
     dock_area: Entity<DockArea>,
     context_select: Entity<SelectState<Vec<SharedString>>>,
     ns_select: Entity<SelectState<Vec<SharedString>>>,
+    resource_tree_panel: Entity<ResourceTreePanel>,
     health_panel: Entity<ClusterHealthPanel>,
     event_feed: Entity<EventFeedPanel>,
     pod_list_panel: Entity<PodListPanel>,
@@ -245,6 +247,7 @@ impl Workspace {
         let dock_area = cx.new(|cx| DockArea::new(DOCK_ID, Some(DOCK_VERSION), window, cx));
         let weak_dock = dock_area.downgrade();
 
+        let resource_tree_panel = cx.new(|cx| ResourceTreePanel::new(cx));
         let health_panel = cx.new(|cx| ClusterHealthPanel::new(cx));
         let event_feed = cx.new(|cx| EventFeedPanel::new(cx));
         let pod_list_panel = cx.new(|cx| PodListPanel::new(window, cx));
@@ -265,12 +268,13 @@ impl Workspace {
         // Bottom: AI agent panel, always visible.
         let left_panel = DockItem::tabs(
             vec![
-                Arc::new(health_panel.clone())     as Arc<dyn PanelView>,
-                Arc::new(pod_list_panel.clone())   as Arc<dyn PanelView>,
-                Arc::new(deployment_panel.clone()) as Arc<dyn PanelView>,
-                Arc::new(service_panel.clone())    as Arc<dyn PanelView>,
-                Arc::new(configmap_panel.clone())  as Arc<dyn PanelView>,
-                Arc::new(node_panel.clone())       as Arc<dyn PanelView>,
+                Arc::new(resource_tree_panel.clone()) as Arc<dyn PanelView>,
+                Arc::new(health_panel.clone())        as Arc<dyn PanelView>,
+                Arc::new(pod_list_panel.clone())      as Arc<dyn PanelView>,
+                Arc::new(deployment_panel.clone())    as Arc<dyn PanelView>,
+                Arc::new(service_panel.clone())       as Arc<dyn PanelView>,
+                Arc::new(configmap_panel.clone())     as Arc<dyn PanelView>,
+                Arc::new(node_panel.clone())          as Arc<dyn PanelView>,
             ],
             &weak_dock,
             window,
@@ -343,6 +347,16 @@ impl Workspace {
                     None => SharedString::from("All"),
                 };
                 this.apply_namespace_filter(cx);
+            },
+        )
+        .detach();
+
+        // ── Subscribe to resource tree node selection ────────────────────────
+        cx.subscribe_in(
+            &resource_tree_panel,
+            window,
+            |this, _, ev: &TreeNodeSelected, window, cx| {
+                this.open_resource(&ev.kind, &ev.namespace, &ev.name, window, cx);
             },
         )
         .detach();
@@ -509,6 +523,7 @@ impl Workspace {
             dock_area,
             context_select,
             ns_select,
+            resource_tree_panel,
             health_panel,
             event_feed,
             pod_list_panel,
@@ -625,6 +640,7 @@ impl Workspace {
                     });
                     let ns_list = self.namespaces.clone();
                     self.palette.update(cx, |p, cx| p.set_namespaces(&ns_list, cx));
+                    self.rebuild_tree(cx);
                     cx.notify();
                 }
             }
@@ -635,26 +651,29 @@ impl Workspace {
                 self.health_panel.update(cx, |panel, cx| {
                     panel.update_pods(&pods_ref, cx);
                 });
-                // Keep palette index up to date.
                 self.palette.update(cx, |p, cx| p.set_pods(&pods_ref, cx));
+                self.rebuild_tree(cx);
             }
             KubeEvent::DeploymentList(items) => {
                 self.health_panel.update(cx, |p, _| p.resource_counts.deployments = items.len());
                 self.health_panel.update(cx, |_, cx| cx.notify());
                 self.all_deployments = items;
                 self.apply_namespace_filter(cx);
+                self.rebuild_tree(cx);
             }
             KubeEvent::ServiceList(items) => {
                 self.health_panel.update(cx, |p, _| p.resource_counts.services = items.len());
                 self.health_panel.update(cx, |_, cx| cx.notify());
                 self.all_services = items;
                 self.apply_namespace_filter(cx);
+                self.rebuild_tree(cx);
             }
             KubeEvent::ConfigMapList(items) => {
                 self.health_panel.update(cx, |p, _| p.resource_counts.configmaps = items.len());
                 self.health_panel.update(cx, |_, cx| cx.notify());
                 self.all_configmaps = items;
                 self.apply_namespace_filter(cx);
+                self.rebuild_tree(cx);
             }
             KubeEvent::NodeList(items) => {
                 let count = items.len();
@@ -662,6 +681,7 @@ impl Workspace {
                 self.node_panel.update(cx, |p, cx| p.set_items(items, cx));
                 self.health_panel.update(cx, |p, _| p.resource_counts.nodes = count);
                 self.health_panel.update(cx, |_, cx| cx.notify());
+                self.rebuild_tree(cx);
             }
             KubeEvent::PodDetail(detail) => {
                 // Collect container names before moving detail.
@@ -1408,6 +1428,24 @@ impl Workspace {
             self.all_configmaps.iter().filter(|c| c.namespace.as_str() == ns).cloned().collect()
         };
         self.configmap_panel.update(cx, |p, cx| p.set_items(configmaps, cx));
+    }
+
+    /// Rebuild and push the resource tree to the tree panel.
+    fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
+        let cluster_name = self.active_context.as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "cluster".to_string());
+        let namespaces: Vec<String> = self.namespaces.iter().map(|s| s.to_string()).collect();
+        let root = build_resource_tree(
+            &cluster_name,
+            &namespaces,
+            &self.all_pods,
+            &self.all_deployments,
+            &self.all_services,
+            &self.all_configmaps,
+            &self.all_nodes,
+        );
+        self.resource_tree_panel.update(cx, |panel, cx| panel.set_tree(root, cx));
     }
 
     /// Build the namespace select items: "All" sentinel + sorted namespace names.
