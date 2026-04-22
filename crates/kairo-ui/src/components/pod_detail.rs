@@ -231,17 +231,22 @@ impl Render for DetailPanel {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .p_4()
-                    .gap_4()
-                    .child(match &detail {
-                        ResourceDetail::Pod(d)        => render_pod(d, cx),
-                        ResourceDetail::Deployment(d) => render_deployment(d),
-                        ResourceDetail::Service(d)    => render_service(d),
-                        ResourceDetail::ConfigMap(d)  => render_configmap(d),
-                        ResourceDetail::Node(d)       => render_node(d),
-                        ResourceDetail::Generic(d)    => render_generic(d),
-                    }),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .p_4()
+                            .gap_4()
+                            .child(match &detail {
+                                ResourceDetail::Pod(d)        => render_pod(d, cx),
+                                ResourceDetail::Deployment(d) => render_deployment(d),
+                                ResourceDetail::Service(d)    => render_service(d),
+                                ResourceDetail::ConfigMap(d)  => render_configmap(d),
+                                ResourceDetail::Node(d)       => render_node(d),
+                                ResourceDetail::Generic(d)    => render_generic(d),
+                            })
+                            .overflow_y_scrollbar(),
+                    ),
             )
             .into_any_element()
     }
