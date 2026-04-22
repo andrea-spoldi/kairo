@@ -451,7 +451,7 @@ impl Render for AiPanel {
                     .children(messages.into_iter().enumerate().map(|(i, e)| render_entry(i, e)))
                     .children(streaming.map(render_streaming_entry));
                 if messages_empty && streaming_none {
-                    inner = inner.child(render_empty_state());
+                    inner = inner.child(render_empty_state(self.provider_label.is_some()));
                 }
                 div().flex_1().min_h_0().child(inner.overflow_y_scrollbar())
             })
@@ -1025,7 +1025,7 @@ fn render_streaming_entry(buf: String) -> impl IntoElement {
         .into_any_element()
 }
 
-fn render_empty_state() -> impl IntoElement {
+fn render_empty_state(has_provider: bool) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -1042,18 +1042,20 @@ fn render_empty_state() -> impl IntoElement {
                 .text_xs()
                 .text_color(TEXT_MUTED),
         )
-        .child(
-            div()
-                .mt(px(8.))
-                .px(px(12.))
-                .py(px(6.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(BORDER)
-                .child(
-                    Label::new("Configure a provider in Settings (⚙ or Ctrl+,)")
-                        .text_xs()
-                        .text_color(TEXT_MUTED),
-                ),
-        )
+        .when(!has_provider, |el| {
+            el.child(
+                div()
+                    .mt(px(8.))
+                    .px(px(12.))
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(BORDER)
+                    .child(
+                        Label::new("Configure a provider in Settings (⚙ or Ctrl+,)")
+                            .text_xs()
+                            .text_color(TEXT_MUTED),
+                    ),
+            )
+        })
 }
