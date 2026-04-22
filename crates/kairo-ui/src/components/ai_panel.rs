@@ -11,8 +11,9 @@ use serde::Deserialize;
 
 use crate::ai_client::ChatMessage;
 use crate::scope::AgentScope;
+use crate::actions::OpenSettings;
 use crate::theme::{
-    ACCENT, ACCENT_BG, ACCENT_BORDER, BORDER, HEALTH_ERR, HEALTH_OK, HEALTH_WARN,
+    ACCENT, ACCENT_BG, ACCENT_BORDER, ACCENT_FG, BORDER, HEALTH_ERR, HEALTH_OK, HEALTH_WARN,
     HOVER_BG, SURFACE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
@@ -57,6 +58,8 @@ pub struct AiPanel {
     context_text: Option<String>,
     /// Number of MCP tools currently available (0 = MCP not connected).
     mcp_tool_count: usize,
+    /// Active provider + model shown in the toolbar (e.g. "Anthropic · claude-sonnet-4-6").
+    provider_label: Option<String>,
     /// Current investigation scope bound to this AI session.
     scope: AgentScope,
 }
@@ -84,6 +87,7 @@ impl AiPanel {
             streaming_buffer: None,
             context_text: None,
             mcp_tool_count: 0,
+            provider_label: None,
             scope: AgentScope::None,
         }
     }
@@ -165,6 +169,12 @@ impl AiPanel {
     /// Update the MCP tool count shown in the panel header.
     pub fn set_mcp_tool_count(&mut self, n: usize, cx: &mut Context<Self>) {
         self.mcp_tool_count = n;
+        cx.notify();
+    }
+
+    /// Update the provider + model label shown in the toolbar.
+    pub fn set_provider_label(&mut self, label: Option<String>, cx: &mut Context<Self>) {
+        self.provider_label = label;
         cx.notify();
     }
 
@@ -280,6 +290,7 @@ impl Render for AiPanel {
         let streaming_none = streaming.is_none();
         let messages = self.messages.to_vec();
         let mcp_tool_count = self.mcp_tool_count;
+        let provider_label = self.provider_label.clone();
         let scope_label = self.scope.label();
         let quick_actions: Vec<&'static str> = self.scope.quick_actions().to_vec();
 
@@ -297,21 +308,36 @@ impl Render for AiPanel {
                     .border_b_1()
                     .border_color(BORDER)
                     .flex_shrink_0()
-                    .child(div().flex_1())
-                    // MCP tools badge — only shown when at least one tool is active.
+                    // AI chip — shown when MCP tools are connected
                     .when(mcp_tool_count > 0, |el| {
+                        let tools_text = format!("{mcp_tool_count} tools");
                         el.child(
                             h_flex()
-                                .gap(px(3.))
+                                .rounded(px(12.))
+                                .border_1()
+                                .border_color(ACCENT_BORDER)
+                                .bg(ACCENT_BG)
+                                .px(px(8.))
+                                .py(px(2.))
+                                .gap(px(4.))
                                 .items_center()
                                 .child(Label::new("⬡").text_xs().text_color(HEALTH_OK))
                                 .child(
-                                    Label::new(SharedString::from(format!("{mcp_tool_count} tools")))
+                                    Label::new(SharedString::from(tools_text))
                                         .text_xs()
-                                        .text_color(HEALTH_OK),
-                                ),
+                                        .text_color(ACCENT_FG),
+                                )
+                                .when_some(provider_label, |el, lbl| {
+                                    el.child(Label::new("·").text_xs().text_color(TEXT_MUTED))
+                                        .child(
+                                            Label::new(SharedString::from(lbl))
+                                                .text_xs()
+                                                .text_color(TEXT_MUTED),
+                                        )
+                                }),
                         )
                     })
+                    .child(div().flex_1())
                     .child(
                         div()
                             .cursor_pointer()
@@ -324,6 +350,19 @@ impl Render for AiPanel {
                                 cx.listener(|this, _, window, cx| this.clear_history(window, cx)),
                             )
                             .child(Label::new("Clear").text_xs().text_color(TEXT_MUTED)),
+                    )
+                    // Gear — opens AI/MCP settings
+                    .child(
+                        div()
+                            .cursor_pointer()
+                            .px_1()
+                            .rounded(px(8.))
+                            .hover(|s| s.bg(HOVER_BG))
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                cx.stop_propagation();
+                                window.dispatch_action(Box::new(OpenSettings), cx);
+                            })
+                            .child(Label::new("⚙").text_xl().text_color(TEXT_MUTED)),
                     ),
             )
             // ── Scope chip + quick actions ────────────────────────────────────

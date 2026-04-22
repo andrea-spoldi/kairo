@@ -30,7 +30,7 @@ use tracing::{error, info};
 
 use kairo_core::logs::LogStream;
 
-use kairo_config::KairoConfig;
+use kairo_config::{ActiveProvider, KairoConfig};
 
 use crate::{
     actions::{OpenCommandPalette, OpenSettings},
@@ -57,7 +57,7 @@ use crate::{
     },
     kube_runtime,
     theme::{
-        ACCENT_BG, ACCENT_BORDER, ACCENT_FG, BG_RAISED, BORDER, HOVER_BG,
+        ACCENT_BG, ACCENT_BORDER, ACCENT_FG, BG_RAISED, BORDER,
         STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE,
         TEXT_MUTED, TEXT_SECONDARY,
     },
@@ -224,6 +224,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        window.set_window_title("Kairo");
         // ── Load kubeconfig contexts synchronously ────────────────────────────
         let mut init_error: Option<String> = None;
         let (contexts, current_ctx) = match KubeClient::list_contexts() {
@@ -412,6 +413,7 @@ impl Workspace {
 
         // ── Build settings panel ──────────────────────────────────────────────
         let config = KairoConfig::load().unwrap_or_default();
+        ai_panel.update(cx, |p, cx| p.set_provider_label(provider_label(&config), cx));
         let settings_panel = cx.new(|cx| SettingsPanel::new(window, cx));
 
         // ── Build command palette ─────────────────────────────────────────────
@@ -448,8 +450,10 @@ impl Workspace {
         cx.subscribe_in(
             &settings_panel,
             window,
-            |this, _, event: &SettingsSaved, _window, _cx| {
+            |this, _, event: &SettingsSaved, _window, cx| {
                 this.config = event.0.clone();
+                let lbl = provider_label(&this.config);
+                this.ai_panel.update(cx, |p, cx| p.set_provider_label(lbl, cx));
                 this.init_mcp();
             },
         )
@@ -1690,7 +1694,7 @@ impl Render for Workspace {
 }
 
 impl Workspace {
-    fn render_top_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_top_bar(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .items_center()
@@ -1720,20 +1724,6 @@ impl Workspace {
                             .text_color(ACCENT_FG),
                     ),
             )
-            // App name + subtitle
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.))
-                    .child(Label::new("Kairo").text_sm().font_weight(FontWeight::MEDIUM))
-                    .child(
-                        Label::new("Cluster situational awareness")
-                            .text_xs()
-                            .text_color(TEXT_MUTED),
-                    ),
-            )
-            .child(div().flex_1())
             // Context selector
             .child(
                 div()
@@ -1754,41 +1744,16 @@ impl Workspace {
                             .menu_width(gpui::rems(10.)),
                     ),
             )
-            // AI enabled pill — shown when MCP tools are connected
-            .when(!self.mcp_tools.is_empty(), |el| {
-                el.child(
-                    div()
-                        .rounded(px(12.))
-                        .border_1()
-                        .border_color(ACCENT_BORDER)
-                        .bg(ACCENT_BG)
-                        .px(px(8.))
-                        .py(px(2.))
-                        .child(
-                            Label::new("AI enabled")
-                                .text_xs()
-                                .text_color(ACCENT_FG),
-                        ),
-                )
-            })
-            // Gear — opens settings panel
-            .child(
-                div()
-                    .cursor_pointer()
-                    .px_1()
-                    .rounded(px(8.))
-                    .hover(|s| s.bg(HOVER_BG))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.settings_panel.update(cx, |panel, cx| {
-                                panel.show(window, cx);
-                            });
-                        }),
-                    )
-                    .child(Label::new("⚙").text_xl().text_color(TEXT_MUTED)),
-            )
+            .child(div().flex_1())
+    }
+}
+
+fn provider_label(config: &KairoConfig) -> Option<String> {
+    match config.ai.active_provider {
+        ActiveProvider::Anthropic => Some(format!("Anthropic · {}", config.ai.anthropic.model)),
+        ActiveProvider::OpenAi => Some(format!("OpenAI · {}", config.ai.openai.model)),
+        ActiveProvider::Ollama => Some(format!("Ollama · {}", config.ai.ollama.model)),
+        ActiveProvider::None => None,
     }
 }
 
