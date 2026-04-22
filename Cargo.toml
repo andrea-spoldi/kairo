@@ -15,6 +15,10 @@ homepage = "https://github.com/andrea-spoldi/kubescope_"
 repository = "https://github.com/andrea-spoldi/kubescope_"
 license = "MIT"
 
+[patch."https://github.com/longbridge/gpui-component"]
+gpui-component = { path = "vendor/gpui-component/crates/ui" }
+gpui-component-assets = { path = "vendor/gpui-component/crates/assets" }
+
 [profile.dev]
 opt-level = 0
 debug = "limited"
