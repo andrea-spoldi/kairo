@@ -5,6 +5,7 @@ use gpui_component::dock::{Panel, PanelControl, PanelEvent};
 use gpui_component::h_flex;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
 use kairo_core::models::{RelationType, ResourceRelationship, ResourceScope, ResourceTreeNode, TreeNodeKind};
 
@@ -44,6 +45,18 @@ struct FlatRow {
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
+/// KindGroup label strings (as produced by `build_resource_tree`) that can be
+/// toggled on/off in the dropdown filter. The label must match exactly.
+const FILTERABLE_KINDS: &[&str] = &[
+    "Pods",
+    "Deployments",
+    "Services",
+    "Ingresses",
+    "ConfigMaps",
+    "Nodes",
+    "Cluster Resources",
+];
+
 pub struct ResourceTreePanel {
     root: Option<ResourceTreeNode>,
     /// Set of node IDs that are currently expanded.
@@ -56,6 +69,8 @@ pub struct ResourceTreePanel {
     focus_handle: FocusHandle,
     filter_input: Entity<InputState>,
     filter: String,
+    /// Kind labels (matching FILTERABLE_KINDS labels) that are hidden from the tree.
+    hidden_kinds: HashSet<String>,
 }
 
 impl ResourceTreePanel {
@@ -78,6 +93,7 @@ impl ResourceTreePanel {
             focus_handle: cx.focus_handle(),
             filter_input,
             filter: String::new(),
+            hidden_kinds: HashSet::new(),
         }
     }
 
@@ -110,8 +126,9 @@ impl ResourceTreePanel {
         self.rows.clear();
         if let Some(root) = &self.root {
             let expanded = &self.expanded;
+            let hidden = &self.hidden_kinds;
             let mut rows = Vec::new();
-            Self::collect_rows(root, 0, expanded, &mut rows);
+            Self::collect_rows(root, 0, expanded, hidden, &mut rows);
             if !self.filter.is_empty() {
                 let q = self.filter.to_lowercase();
                 rows.retain(|r| r.name.to_lowercase().contains(&q));
@@ -124,8 +141,15 @@ impl ResourceTreePanel {
         node: &ResourceTreeNode,
         depth: usize,
         expanded: &HashSet<String>,
+        hidden: &HashSet<String>,
         rows: &mut Vec<FlatRow>,
     ) {
+        // Skip entire KindGroup subtrees whose kind label is hidden.
+        if let TreeNodeKind::KindGroup(ref label) = node.kind {
+            if hidden.contains(label.as_str()) {
+                return;
+            }
+        }
         let is_expanded = expanded.contains(&node.id);
         let has_children = !node.children.is_empty();
         // Cap relationship badges at 2 to avoid overflow
@@ -144,7 +168,7 @@ impl ResourceTreePanel {
         });
         if is_expanded {
             for child in &node.children {
-                Self::collect_rows(child, depth + 1, expanded, rows);
+                Self::collect_rows(child, depth + 1, expanded, hidden, rows);
             }
         }
     }
@@ -184,6 +208,37 @@ impl Panel for ResourceTreePanel {
 
     fn zoomable(&self, _: &App) -> Option<PanelControl> {
         None
+    }
+
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let weak = cx.entity().downgrade();
+        let menu = menu.separator().item(PopupMenuItem::label("Show / Hide"));
+        FILTERABLE_KINDS.iter().fold(menu, |menu, &label| {
+            let is_hidden = self.hidden_kinds.contains(label);
+            let w = weak.clone();
+            let label_str = label.to_string();
+            menu.item(
+                PopupMenuItem::new(label)
+                    .checked(!is_hidden)
+                    .on_click(move |_, _, cx| {
+                        w.update(cx, |this, cx| {
+                            if this.hidden_kinds.contains(&label_str) {
+                                this.hidden_kinds.remove(&label_str);
+                            } else {
+                                this.hidden_kinds.insert(label_str.clone());
+                            }
+                            this.rebuild_rows();
+                            cx.notify();
+                        })
+                        .ok();
+                    }),
+            )
+        })
     }
 }
 
