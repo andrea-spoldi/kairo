@@ -52,7 +52,6 @@ use crate::{
         },
         resource_tree::{ResourceTreePanel, TreeNodeSelected},
         settings_panel::{McpTestRequest, SettingsPanel, SettingsSaved},
-        stats_panel::StatsPanel,
         yaml_viewer::{yaml_title, YamlViewerPanel},
     },
     kube_runtime,
@@ -174,7 +173,6 @@ pub struct Workspace {
     detail_panel: Entity<DetailPanel>,
     yaml_panel: Entity<YamlViewerPanel>,
     log_panel: Entity<LogViewerPanel>,
-    stats_panel: Entity<StatsPanel>,
     palette: Entity<CommandPalette>,
     settings_panel: Entity<SettingsPanel>,
     ai_panel: Entity<AiPanel>,
@@ -277,13 +275,12 @@ impl Workspace {
         let detail_panel = cx.new(|cx| DetailPanel::new(cx));
         let yaml_panel = cx.new(|cx| YamlViewerPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
-        let stats_panel = cx.new(|cx| StatsPanel::new(cx));
         let ai_panel = cx.new(|cx| AiPanel::new(window, cx));
 
         // ── Situational-awareness dock layout (Phase 18+) ────────────────────
         // Left:   Health summary + resource lists (navigator tabs).
         // Center: Warning event feed (the focal point).
-        // Right:  Inspector — Details / YAML / Logs / Stats for the selection.
+        // Right:  Inspector — Details / YAML / Logs for the selection.
         // Bottom: AI agent panel, always visible.
         let left_panel = DockItem::tab(resource_tree_panel.clone(), &weak_dock, window, cx);
 
@@ -294,7 +291,6 @@ impl Workspace {
                 Arc::new(detail_panel.clone()) as Arc<dyn PanelView>,
                 Arc::new(yaml_panel.clone())   as Arc<dyn PanelView>,
                 Arc::new(log_panel.clone())    as Arc<dyn PanelView>,
-                Arc::new(stats_panel.clone()) as Arc<dyn PanelView>,
             ],
             &weak_dock,
             window,
@@ -599,7 +595,6 @@ impl Workspace {
             detail_panel,
             yaml_panel,
             log_panel,
-            stats_panel,
             palette,
             settings_panel,
             ai_panel,
@@ -932,7 +927,6 @@ impl Workspace {
             panel.clear_detail();
             cx.notify();
         });
-        self.stats_panel.update(cx, |p, cx| p.clear(cx));
         self.yaml_panel.update(cx, |panel, _| panel.clear());
         // Stop log stream and clear log panel.
         self.log_abort.store(true, Ordering::SeqCst);
@@ -1180,7 +1174,7 @@ impl Workspace {
         }
     }
 
-    /// Load the given resource into the inspector (Details + YAML + Stats) and
+    /// Load the given resource into the inspector (Details + YAML) and
     /// open the right dock. For Pods, also starts log streaming.
     ///
     /// When the typed fast path misses (cache miss, or kind has no typed view),
@@ -1319,8 +1313,6 @@ impl Workspace {
 
     fn show_detail(&mut self, detail: ResourceDetail, window: &mut Window, cx: &mut Context<Self>) {
         let is_pod = matches!(detail, ResourceDetail::Pod(_));
-        self.stats_panel
-            .update(cx, |p, cx| p.set_detail(Some(detail.clone()), cx));
         self.detail_panel
             .update(cx, |p, cx| { p.set_detail(detail); cx.notify(); });
         // Non-pods can't stream logs — reset the log panel to its empty state
