@@ -362,6 +362,7 @@ fn panel_section(content: impl IntoElement) -> impl IntoElement {
         .border_1()
         .border_color(BORDER)
         .bg(Hsla { h: 0.0, s: 0.0, l: 1.0, a: 0.03 })
+        .overflow_hidden()
         .p(px(16.))
         .child(content)
 }
@@ -496,14 +497,27 @@ fn render_kv_section(
             let kv = format!("{k}={v}");
             let chip_id = SharedString::from(format!("copy-{title}-{k}"));
             section = section.child(
-                h_flex()
-                    .gap_1()
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .py(px(2.))
                     .child(
-                        Label::new(format!("  {kv}"))
-                            .text_sm()
-                            .text_color(TEXT_SECONDARY),
+                        Label::new(k.clone())
+                            .text_xs()
+                            .text_color(TEXT_MUTED),
                     )
-                    .child(copy_chip(chip_id, kv, cx)),
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .flex_wrap()
+                            .child(
+                                Label::new(v.clone())
+                                    .text_sm()
+                                    .text_color(TEXT_SECONDARY),
+                            )
+                            .child(copy_chip(chip_id, kv, cx)),
+                    ),
             );
         }
     }
