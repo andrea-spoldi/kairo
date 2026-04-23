@@ -1,5 +1,6 @@
 mod event_feed;
 mod fixtures;
+mod full;
 mod log_viewer;
 mod pod_detail;
 mod pod_list;
@@ -16,13 +17,14 @@ use crate::theme::{ACCENT_FG, BG_RAISED, BORDER, TEXT_MUTED};
 /// Available stories: `pod-list`, `event-feed`, `pod-detail`, `log-viewer`
 pub fn run(name: &str, cx: &mut gpui::App) {
     match name {
+        "full"        => full::open(cx),
         "pod-list"    => pod_list::open(cx),
         "event-feed"  => event_feed::open(cx),
         "pod-detail"  => pod_detail::open(cx),
         "log-viewer"  => log_viewer::open(cx),
         other => {
             eprintln!(
-                "unknown story '{other}'. available: pod-list, event-feed, pod-detail, log-viewer"
+                "unknown story '{other}'. available: full, pod-list, event-feed, pod-detail, log-viewer"
             );
             std::process::exit(1);
         }

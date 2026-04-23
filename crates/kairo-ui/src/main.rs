@@ -60,8 +60,10 @@ fn main() {
 
     tracing_subscriber::fmt::init();
 
-    // Story mode skips K8s runtime — no cluster connection needed.
-    if story_name.is_none() {
+    // The full story renders a real Workspace so it needs the kube runtime
+    // (even though no cluster is connected).  Isolated component stories don't.
+    let needs_kube_runtime = story_name.is_none() || story_name.as_deref() == Some("full");
+    if needs_kube_runtime {
         kube_runtime::init();
     }
 
@@ -76,22 +78,14 @@ fn main() {
             );
             cx.activate(true);
 
-            if let Some(name) = &story_name {
-                stories::run(name, cx);
-                return;
-            }
-
-            // Global shortcuts (no context — fire anywhere).
+            // Register all keybindings up front — full story mode renders a real
+            // Workspace so it needs them; isolated component stories ignore them.
             cx.bind_keys([
                 KeyBinding::new("cmd-k",     OpenCommandPalette, None),
                 KeyBinding::new("ctrl-k",    OpenCommandPalette, None),
                 KeyBinding::new("cmd-,",     OpenSettings,       None),
                 KeyBinding::new("ctrl-,",    OpenSettings,       None),
             ]);
-
-            // Pod list navigation (fires only when PodList key context is focused).
-            // "&& !Input" prevents these from firing when a text field inside
-            // the PodList panel has focus (Input declares key_context("Input")).
             cx.bind_keys([
                 KeyBinding::new("j",      NavigateDown,      Some("PodList && !Input")),
                 KeyBinding::new("k",      NavigateUp,        Some("PodList && !Input")),
@@ -102,14 +96,17 @@ fn main() {
                 KeyBinding::new("g",      ToggleGrouping,    Some("PodList && !Input")),
                 KeyBinding::new("y",      YankName,          Some("PodList && !Input")),
             ]);
-
-            // Palette navigation (fires only when Palette key context is focused).
             cx.bind_keys([
                 KeyBinding::new("down",   NavigateDown,       Some("Palette")),
                 KeyBinding::new("up",     NavigateUp,         Some("Palette")),
                 KeyBinding::new("return", ConfirmSelection,   Some("Palette")),
                 KeyBinding::new("escape", CloseCommandPalette, Some("Palette")),
             ]);
+
+            if let Some(name) = &story_name {
+                stories::run(name, cx);
+                return;
+            }
 
             cx.spawn(async move |cx| {
                 cx.open_window(
