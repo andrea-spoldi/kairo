@@ -388,7 +388,7 @@ fn status_dot_label(status: &str) -> impl IntoElement {
     let symbol = status_symbol(status);
     h_flex()
         .gap(px(5.))
-        .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
+        .child(div().bg(color))
         .child(
             Label::new(format!("{symbol} {status}"))
                 .text_sm()
@@ -547,8 +547,7 @@ fn render_pod_containers(detail: &PodDetail) -> AnyElement {
                 .bg(SURFACE)
                 .child(
                     h_flex()
-                        .gap(px(6.))
-                        .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(state_color))
+                        .child(div().bg(state_color))
                         .child(
                             Label::new(format!("{state_symbol} {}", c.name))
                                 .text_sm()
