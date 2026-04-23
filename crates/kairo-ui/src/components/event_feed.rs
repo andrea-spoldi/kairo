@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::h_flex;
@@ -145,7 +146,29 @@ impl Render for EventFeedPanel {
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(TEXT_HEADING),
-                    ),
+                    )
+                    .child(div().flex_1())
+                    .when(count > 0, |el: Div| {
+                        el.child(
+                            div()
+                                .cursor_pointer()
+                                .px(px(8.))
+                                .py(px(3.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(BORDER)
+                                .bg(SURFACE)
+                                .hover(|s| s.bg(HOVER_BG))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.clear(cx);
+                                    }),
+                                )
+                                .child(Label::new("Clear").text_xs().text_color(TEXT_MUTED)),
+                        )
+                    }),
             )
             // ── Event list ────────────────────────────────────────────────────
             .child(
