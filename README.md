@@ -48,12 +48,33 @@ GPU-rendered, always up to date, with no browser and no cloud dependency.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in v0.12.0
+
+- **Dark glass theme** — redesigned left dock and panel chrome with a translucent glass aesthetic
+- **Kind-filter checkboxes** — filter the resource tree by resource type (Pods, Deployments, Services, …) without leaving the panel
+- **Namespace filter in resource tree** — scoped directly from the left dock dropdown
+- **AI status moved into Agent panel** — cleaner top bar; provider status is shown inline inside the panel
+- **Details panel fixes** — restored scrolling, prevented content overflow in section cards
+- **Removed StatsPanel** — cluster stats are now consolidated in the Details panel
+
+## What's new in v0.11.0
+
+- **Hierarchical resource tree** — Deployments, StatefulSets, and DaemonSets show their owned pods as children
+- **AgentScope state machine** — the AI agent's context scope (cluster / namespace / resource) follows your selection automatically
+- **Investigation flows** — three built-in prompt flows: *Crash Loop*, *Image Pull*, and *OOMKilled* — one click sends a structured SRE investigation prompt pre-loaded with the relevant resource context
+
 ## Features
 
 ### Situational awareness
 - **Cluster health sidebar** — pod counts by status (●/◐/✖), broken down per namespace
 - **Live warning event feed** — cluster-wide `Warning` events surfaced in real time, newest first
 - **Status bar** — always-visible cluster name, active namespace, and pod health summary
+
+### Resource tree
+- Hierarchical view: Deployments/StatefulSets/DaemonSets → owned Pods
+- Covers: Pods, Deployments, Services, ConfigMaps, Nodes
+- **Kind-filter checkboxes** to show only the resource types you care about
+- **Namespace filter** directly in the resource tree dropdown
 
 ### Pod list
 - Real-time updates via Kubernetes watchers — no polling
@@ -68,8 +89,9 @@ GPU-rendered, always up to date, with no browser and no cloud dependency.
 
 ### AI Agent (right dock)
 - Streaming chat backed by **Anthropic**, **OpenAI-compatible endpoints**, or **Ollama**
-- Context-aware: the selected resource (pod, deployment, …) is automatically injected into the system prompt
-- **`⬡ Analyze` button** on every warning event card and every pod event row — one click sends the event as a structured SRE analysis prompt to the agent
+- **AgentScope** — context scope (cluster / namespace / resource) follows your selection automatically
+- **Investigation flows** — one-click SRE prompts for *Crash Loop*, *Image Pull*, and *OOMKilled*
+- **`⬡ Analyze` button** on every warning event card and every pod event row — one click sends the event as a structured SRE analysis prompt
 - Analysis responses rendered as visual cards: color-coded confidence badges (`HIGH` / `MEDIUM` / `LOW`), evidence bullets, and numbered next steps
 - MCP server support: connect a [Kubernetes MCP server](https://modelcontextprotocol.io) to give the agent live cluster tool access
 
@@ -80,7 +102,7 @@ GPU-rendered, always up to date, with no browser and no cloud dependency.
 
 ### Native & fast
 - Built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) — Zed's GPU-accelerated UI framework, no Electron
-- Dark theme, WCAG AA contrast throughout
+- Dark glass theme, WCAG AA contrast throughout
 - Targets macOS (Apple Silicon + Intel) and Linux (x86_64)
 
 ## Installation
@@ -97,14 +119,57 @@ tar -xzf kairo-<version>-x86_64-unknown-linux-gnu.tar.gz
 sudo mv kairo /usr/local/bin/
 ```
 
+## Setup
+
+### 1. Kubernetes access
+
+Kairo reads your kubeconfig automatically from `~/.kube/config` (the same file `kubectl` uses).
+No additional configuration is required — if `kubectl cluster-info` works, Kairo will connect.
+
+To use a non-default kubeconfig:
+
+```bash
+KUBECONFIG=/path/to/your/config kairo
+```
+
+Minimum RBAC required (read-only):
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "events", "pods/log", "nodes", "services", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+```
+
+### 2. AI Agent (optional)
+
+Open **Settings** (`⚙` in the top bar, or `Cmd+,` / `Ctrl+,`) and configure one provider:
+
+| Provider | What to fill in |
+|---|---|
+| **Anthropic** | API key from [console.anthropic.com](https://console.anthropic.com) |
+| **OpenAI-compatible** | Base URL + API key (works with OpenAI, Azure OpenAI, LM Studio, etc.) |
+| **Ollama** | Base URL of your local Ollama server (default: `http://localhost:11434`) |
+
+Config is saved to `~/.kairo/config.toml` with `0600` permissions. The file is created on first save.
+
+### 3. MCP server (optional)
+
+If you have a [Kubernetes MCP server](https://modelcontextprotocol.io) running, enter its URL in the **MCP** tab of Settings and enable it. This allows the AI agent to query the cluster directly during a conversation.
+
 ## Building from source
 
 ### Prerequisites
 
 **macOS**
 ```bash
-xcode-select --install   # Xcode command line tools
+xcode-select --install   # Xcode command line tools (includes Metal + clang)
 ```
+
+> Xcode must include macOS platform components. Open Xcode → Settings → Platforms and install **macOS** if it is not already listed.
 
 **Linux (Ubuntu / Debian)**
 ```bash
@@ -115,6 +180,14 @@ sudo apt-get install -y \
   libx11-dev libxcb1-dev
 ```
 
+**Rust toolchain** (both platforms)
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Kairo requires a recent stable Rust (1.80+). `rustup update stable` if you are on an older version.
+
 ### Build
 
 ```bash
@@ -124,12 +197,17 @@ cargo build --release -p kairo-ui
 ./target/release/kairo
 ```
 
+> **First build note:** The GPUI dependency is pulled from the Zed monorepo and
+> gpui-component from Longbridge — both via git. The first clone can take a few
+> minutes; subsequent builds use Cargo's local cache.
+
 ### Useful commands
 
 ```bash
 cargo check                           # fast compilation check
-cargo clippy -- -D warnings           # lint
+cargo clippy -- -D warnings           # lint (warnings are errors)
 cargo test -p kairo-core              # unit tests (no cluster needed)
+cargo test -p kairo-config            # config round-trip tests
 cargo run -p kairo-ui                 # run in development mode
 bash scripts/make-icons.sh            # PNG → .icns (macOS)
 bash scripts/make-dmg.sh              # build drag-to-install DMG (macOS)
@@ -142,15 +220,6 @@ bash scripts/make-dmg.sh              # build drag-to-install DMG (macOS)
 Mutations belong in your GitOps pipeline. Kairo's job is to show you
 the truth about what the cluster is actually doing, clearly and immediately,
 so you can make the right call at the right moment.
-
-Minimum RBAC required:
-
-```yaml
-rules:
-  - apiGroups: [""]
-    resources: ["pods", "namespaces", "events", "pods/log"]
-    verbs: ["get", "list", "watch"]
-```
 
 ## Architecture
 
@@ -192,14 +261,16 @@ testable. The UI crate calls core functions; it never constructs `Api<T>` direct
 ## Roadmap
 
 - [x] Command palette (`⌘K` / `Ctrl+K`) — jump to any pod, switch context/namespace
-- [x] Resource tree — Deployments, Services, ConfigMaps, Nodes
+- [x] Hierarchical resource tree — Deployments, Services, ConfigMaps, Nodes with kind-filter checkboxes
 - [x] Raw YAML viewer with syntax highlighting
 - [x] Node overview with CPU/memory allocation bars
 - [x] Settings panel — LLM provider configuration persisted to `~/.kairo/config.toml`
 - [x] AI Agent panel — streaming chat with context-aware SRE prompts
+- [x] AgentScope state machine — agent context follows your selection automatically
+- [x] Investigation flows — Crash Loop, Image Pull, OOMKilled one-click prompts
 - [x] Event analysis — `⬡ Analyze` button on every warning event card
 - [x] MCP server integration settings — groundwork for live cluster tool-calling
-- [ ] Live MCP tool execution — let the agent call `kubectl` operations read-only
+- [ ] Live MCP tool execution — let the agent call read-only cluster operations
 - [ ] Multi-cluster tabs
 
 ## License
