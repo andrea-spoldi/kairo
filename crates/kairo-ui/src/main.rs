@@ -6,6 +6,7 @@ mod components;
 mod kube_runtime;
 mod mcp_client;
 mod scope;
+mod stories;
 mod theme;
 
 use app::Workspace;
@@ -48,30 +49,37 @@ fn fix_exec_path() {
 }
 
 fn main() {
+    // Check for story mode before any heavy initialisation.
+    let story_name = std::env::args()
+        .skip_while(|a| a != "--story")
+        .nth(1);
+
     // Must run before kube_runtime::init() so exec credential plugins are
     // resolvable inside the tokio runtime's spawned tasks.
     fix_exec_path();
 
     tracing_subscriber::fmt::init();
 
-    // Initialise the dedicated tokio runtime for kube-rs operations.
-    // GPUI on macOS uses Grand Central Dispatch, not tokio, so kube-rs (which
-    // depends on tower/hyper) must run on a real tokio executor.
-    kube_runtime::init();
+    // Story mode skips K8s runtime — no cluster connection needed.
+    if story_name.is_none() {
+        kube_runtime::init();
+    }
 
     gpui_platform::application()
         .with_assets(Assets)
-        .run(|cx: &mut App| {
+        .run(move |cx: &mut App| {
             gpui_component::init(cx);
-            // Switch the component library to dark mode so DataTable, Button,
-            // Input, Select, and all other widgets use colours calibrated for
-            // a dark background instead of the default light-mode palette.
             gpui_component::theme::Theme::change(
                 gpui_component::theme::ThemeMode::Dark,
                 None,
                 cx,
             );
             cx.activate(true);
+
+            if let Some(name) = &story_name {
+                stories::run(name, cx);
+                return;
+            }
 
             // Global shortcuts (no context — fire anywhere).
             cx.bind_keys([
