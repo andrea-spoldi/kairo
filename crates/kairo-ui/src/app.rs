@@ -30,7 +30,7 @@ use tracing::{error, info};
 
 use kairo_core::logs::LogStream;
 
-use kairo_config::KairoConfig;
+use kairo_config::{ActiveProvider, KairoConfig};
 
 use crate::{
     actions::{OpenCommandPalette, OpenSettings},
@@ -42,7 +42,7 @@ use crate::{
         ai_panel::{AiPanel, AiSendMessage},
         cluster_health::{ClusterHealthPanel, SidebarNamespaceSelected},
         command_palette::{CommandPalette, PaletteAction},
-        event_feed::{EventBodyClicked, EventFeedPanel},
+        event_feed::{EventBodyClicked, EventFeedPanel, SendEventDirectToAgent},
         log_viewer::{ContainerSelected, LogViewerPanel, SendLogToAgent},
         pod_detail::{AnalyzeResourceRequest, DetailPanel, ResourceDetail, SendEventToAgent},
         pod_list::{PodListPanel, PodSelected},
@@ -52,12 +52,12 @@ use crate::{
         },
         resource_tree::{ResourceTreePanel, TreeNodeSelected},
         settings_panel::{McpTestRequest, SettingsPanel, SettingsSaved},
-        stats_panel::StatsPanel,
         yaml_viewer::{yaml_title, YamlViewerPanel},
     },
     kube_runtime,
     theme::{
-        BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE,
+        ACCENT_BG, ACCENT_BORDER, ACCENT_FG, BG_RAISED, BORDER,
+        STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, SURFACE,
         TEXT_MUTED, TEXT_SECONDARY,
     },
 };
@@ -173,7 +173,6 @@ pub struct Workspace {
     detail_panel: Entity<DetailPanel>,
     yaml_panel: Entity<YamlViewerPanel>,
     log_panel: Entity<LogViewerPanel>,
-    stats_panel: Entity<StatsPanel>,
     palette: Entity<CommandPalette>,
     settings_panel: Entity<SettingsPanel>,
     ai_panel: Entity<AiPanel>,
@@ -223,6 +222,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        window.set_window_title("Kairo");
         // ── Load kubeconfig contexts synchronously ────────────────────────────
         let mut init_error: Option<String> = None;
         let (contexts, current_ctx) = match KubeClient::list_contexts() {
@@ -264,7 +264,7 @@ impl Workspace {
         let dock_area = cx.new(|cx| DockArea::new(DOCK_ID, Some(DOCK_VERSION), window, cx));
         let weak_dock = dock_area.downgrade();
 
-        let resource_tree_panel = cx.new(|cx| ResourceTreePanel::new(cx));
+        let resource_tree_panel = cx.new(|cx| ResourceTreePanel::new(window, cx));
         let health_panel = cx.new(|cx| ClusterHealthPanel::new(cx));
         let event_feed = cx.new(|cx| EventFeedPanel::new(cx));
         let pod_list_panel = cx.new(|cx| PodListPanel::new(window, cx));
@@ -275,28 +275,14 @@ impl Workspace {
         let detail_panel = cx.new(|cx| DetailPanel::new(cx));
         let yaml_panel = cx.new(|cx| YamlViewerPanel::new(cx));
         let log_panel = cx.new(|cx| LogViewerPanel::new(cx));
-        let stats_panel = cx.new(|cx| StatsPanel::new(cx));
         let ai_panel = cx.new(|cx| AiPanel::new(window, cx));
 
         // ── Situational-awareness dock layout (Phase 18+) ────────────────────
         // Left:   Health summary + resource lists (navigator tabs).
         // Center: Warning event feed (the focal point).
-        // Right:  Inspector — Details / YAML / Logs / Stats for the selection.
+        // Right:  Inspector — Details / YAML / Logs for the selection.
         // Bottom: AI agent panel, always visible.
-        let left_panel = DockItem::tabs(
-            vec![
-                Arc::new(resource_tree_panel.clone()) as Arc<dyn PanelView>,
-                Arc::new(health_panel.clone())        as Arc<dyn PanelView>,
-                Arc::new(pod_list_panel.clone())      as Arc<dyn PanelView>,
-                Arc::new(deployment_panel.clone())    as Arc<dyn PanelView>,
-                Arc::new(service_panel.clone())       as Arc<dyn PanelView>,
-                Arc::new(configmap_panel.clone())     as Arc<dyn PanelView>,
-                Arc::new(node_panel.clone())          as Arc<dyn PanelView>,
-            ],
-            &weak_dock,
-            window,
-            cx,
-        );
+        let left_panel = DockItem::tab(resource_tree_panel.clone(), &weak_dock, window, cx);
 
         let center = DockItem::tab(event_feed.clone(), &weak_dock, window, cx);
 
@@ -305,7 +291,6 @@ impl Workspace {
                 Arc::new(detail_panel.clone()) as Arc<dyn PanelView>,
                 Arc::new(yaml_panel.clone())   as Arc<dyn PanelView>,
                 Arc::new(log_panel.clone())    as Arc<dyn PanelView>,
-                Arc::new(stats_panel.clone()) as Arc<dyn PanelView>,
             ],
             &weak_dock,
             window,
@@ -424,6 +409,7 @@ impl Workspace {
 
         // ── Build settings panel ──────────────────────────────────────────────
         let config = KairoConfig::load().unwrap_or_default();
+        ai_panel.update(cx, |p, cx| p.set_provider_label(provider_label(&config), cx));
         let settings_panel = cx.new(|cx| SettingsPanel::new(window, cx));
 
         // ── Build command palette ─────────────────────────────────────────────
@@ -460,8 +446,10 @@ impl Workspace {
         cx.subscribe_in(
             &settings_panel,
             window,
-            |this, _, event: &SettingsSaved, _window, _cx| {
+            |this, _, event: &SettingsSaved, _window, cx| {
                 this.config = event.0.clone();
+                let lbl = provider_label(&this.config);
+                this.ai_panel.update(cx, |p, cx| p.set_provider_label(lbl, cx));
                 this.init_mcp();
             },
         )
@@ -487,12 +475,12 @@ impl Workspace {
         )
         .detach();
 
-        // ── Subscribe to "Analyze" buttons in event cards ─────────────────────
+        // ── Subscribe to "Send to Agent" direct from event cards ─────────────
         cx.subscribe_in(
             &event_feed,
             window,
-            |this, _, event: &AnalyzeEventRequest, window, cx| {
-                this.handle_analyze_event(event.0.clone(), window, cx);
+            |this, _, event: &SendEventDirectToAgent, window, cx| {
+                this.set_agent_scope(event.0.clone(), window, cx);
             },
         )
         .detach();
@@ -607,7 +595,6 @@ impl Workspace {
             detail_panel,
             yaml_panel,
             log_panel,
-            stats_panel,
             palette,
             settings_panel,
             ai_panel,
@@ -940,7 +927,6 @@ impl Workspace {
             panel.clear_detail();
             cx.notify();
         });
-        self.stats_panel.update(cx, |p, cx| p.clear(cx));
         self.yaml_panel.update(cx, |panel, _| panel.clear());
         // Stop log stream and clear log panel.
         self.log_abort.store(true, Ordering::SeqCst);
@@ -1188,7 +1174,7 @@ impl Workspace {
         }
     }
 
-    /// Load the given resource into the inspector (Details + YAML + Stats) and
+    /// Load the given resource into the inspector (Details + YAML) and
     /// open the right dock. For Pods, also starts log streaming.
     ///
     /// When the typed fast path misses (cache miss, or kind has no typed view),
@@ -1327,8 +1313,6 @@ impl Workspace {
 
     fn show_detail(&mut self, detail: ResourceDetail, window: &mut Window, cx: &mut Context<Self>) {
         let is_pod = matches!(detail, ResourceDetail::Pod(_));
-        self.stats_panel
-            .update(cx, |p, cx| p.set_detail(Some(detail.clone()), cx));
         self.detail_panel
             .update(cx, |p, cx| { p.set_detail(detail); cx.notify(); });
         // Non-pods can't stream logs — reset the log panel to its empty state
@@ -1366,6 +1350,32 @@ impl Workspace {
 
         if let Some(ctx) = resource_ctx {
             prompt.push_str(&format!("\n- Selected resource: {ctx}"));
+        }
+
+        // When the agent has an investigation scope, ask for structured analysis.
+        match &self.agent_scope {
+            AgentScope::Event { .. } | AgentScope::Resource(_) => {
+                prompt.push_str(
+                    "\n\nWhen providing analysis in response to an investigation scope, \
+                     structure your response EXACTLY as follows — no preamble, \
+                     no markdown headers outside this format:\n\
+                     \n\
+                     HYPOTHESIS 1\n\
+                     Title: <one sentence>\n\
+                     Confidence: High | Medium | Low\n\
+                     Evidence:\n\
+                     - <bullet>\n\
+                     - <bullet>\n\
+                     \n\
+                     HYPOTHESIS 2\n\
+                     ...\n\
+                     \n\
+                     NEXT CHECKS\n\
+                     - <actionable check>\n\
+                     - <actionable check>",
+                );
+            }
+            _ => {}
         }
 
         // When MCP tools are available, list their names and instruct the model
@@ -1531,6 +1541,11 @@ impl Workspace {
             self.all_configmaps.iter().filter(|c| c.namespace.as_str() == ns).cloned().collect()
         };
         self.configmap_panel.update(cx, |p, cx| p.set_items(configmaps, cx));
+
+        // Propagate to event feed and resource tree.
+        let ns_filter = if all { String::new() } else { ns.to_string() };
+        self.event_feed.update(cx, |p, cx| p.set_namespace_filter(ns_filter, cx));
+        self.rebuild_tree(cx);
     }
 
     /// Set the AI agent investigation scope, push its context block, and open the bottom dock.
@@ -1567,18 +1582,40 @@ impl Workspace {
         let cluster_name = self.active_context.as_ref()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "cluster".to_string());
-        let namespaces: Vec<String> = self.namespaces.iter().map(|s| s.to_string()).collect();
+        let ns = self.active_namespace.as_ref();
+        let all = ns == "All";
+
+        let namespaces: Vec<String> = if all {
+            self.namespaces.iter().map(|s| s.to_string()).collect()
+        } else {
+            vec![ns.to_string()]
+        };
+
+        macro_rules! ns_filter {
+            ($list:expr, $field:ident) => {
+                if all { $list.to_vec() } else { $list.iter().filter(|r| r.$field.as_str() == ns).cloned().collect() }
+            };
+        }
+
+        let pods        = ns_filter!(self.all_pods,          namespace);
+        let deployments = ns_filter!(self.all_deployments,   namespace);
+        let replica_sets= ns_filter!(self.all_replica_sets,  namespace);
+        let services    = ns_filter!(self.all_services,      namespace);
+        let configmaps  = ns_filter!(self.all_configmaps,    namespace);
+        let ingresses   = ns_filter!(self.all_ingresses,     namespace);
+        let hpas        = ns_filter!(self.all_hpas,          namespace);
+
         let root = build_resource_tree(
             &cluster_name,
             &namespaces,
-            &self.all_pods,
-            &self.all_deployments,
-            &self.all_replica_sets,
-            &self.all_services,
-            &self.all_configmaps,
+            &pods,
+            &deployments,
+            &replica_sets,
+            &services,
+            &configmaps,
             &self.all_nodes,
-            &self.all_ingresses,
-            &self.all_hpas,
+            &ingresses,
+            &hpas,
             &self.all_storage_classes,
         );
         self.resource_tree_panel.update(cx, |panel, cx| panel.set_tree(root, cx));
@@ -1630,53 +1667,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.settings_panel.update(cx, |panel, cx| panel.show(window, cx));
             }))
-            .child(
-                TitleBar::new()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .pl_2()
-                            .child(Label::new("Kairo").text_sm()),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(
-                                Select::new(&self.context_select)
-                                    .placeholder("Select context")
-                                    .menu_width(gpui::rems(14.)),
-                            )
-                            .child(
-                                Select::new(&self.ns_select)
-                                    .placeholder("Namespace")
-                                    .menu_width(gpui::rems(10.)),
-                            )
-                            // Gear icon — opens settings panel.
-                            .child(
-                                div()
-                                    .cursor_pointer()
-                                    .px_1()
-                                    .rounded(px(4.))
-                                    .hover(|s| s.bg(HOVER_BG))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, window, cx| {
-                                            cx.stop_propagation();
-                                            this.settings_panel.update(cx, |panel, cx| {
-                                                panel.show(window, cx);
-                                            });
-                                        }),
-                                    )
-                                    .child(Label::new("⚙").text_sm().text_color(TEXT_MUTED)),
-                            ),
-                    ),
-            )
+            .child(TitleBar::new())
+            .child(self.render_top_bar(cx))
             .child(div().flex_1().min_h_0().child(self.dock_area.clone()))
             .child(render_status_bar(&ctx_name, &ns_name, running, pending, failed, total, self.status_alert.as_ref()))
             .children(gpui_component::Root::render_sheet_layer(_window, cx))
@@ -1690,6 +1682,70 @@ impl Render for Workspace {
             .when(self.settings_panel.read(cx).is_visible(), |d: Div| {
                 d.child(self.settings_panel.clone())
             })
+    }
+}
+
+impl Workspace {
+    fn render_top_bar(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .bg(BG_RAISED)
+            .border_b_1()
+            .border_color(BORDER)
+            .flex_shrink_0()
+            // K logo
+            .child(
+                div()
+                    .w(px(28.))
+                    .h(px(28.))
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(ACCENT_BORDER)
+                    .bg(ACCENT_BG)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        Label::new("K")
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(ACCENT_FG),
+                    ),
+            )
+            // Context selector
+            .child(
+                div()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Select::new(&self.context_select)
+                            .placeholder("Select context")
+                            .menu_width(gpui::rems(14.)),
+                    ),
+            )
+            // Namespace selector
+            .child(
+                div()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Select::new(&self.ns_select)
+                            .placeholder("Namespace")
+                            .menu_width(gpui::rems(10.)),
+                    ),
+            )
+            .child(div().flex_1())
+    }
+}
+
+fn provider_label(config: &KairoConfig) -> Option<String> {
+    match config.ai.active_provider {
+        ActiveProvider::Anthropic => Some(format!("Anthropic · {}", config.ai.anthropic.model)),
+        ActiveProvider::OpenAi => Some(format!("OpenAI · {}", config.ai.openai.model)),
+        ActiveProvider::Ollama => Some(format!("Ollama · {}", config.ai.ollama.model)),
+        ActiveProvider::None => None,
     }
 }
 

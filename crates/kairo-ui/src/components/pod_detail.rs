@@ -14,8 +14,9 @@ use kairo_core::{
 
 use crate::analyze::AnalyzeEventRequest;
 use crate::theme::{
-    status_color, status_symbol, ACCENT, BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING,
-    STATUS_RUNNING, SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    status_color, status_symbol, ACCENT, ACCENT_BG, ACCENT_BORDER, ACCENT_FG,
+    BORDER, HOVER_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING,
+    SURFACE, TEXT_HEADING, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
 /// Emitted when the user clicks "Send to Agent" after an event selected a resource.
@@ -230,17 +231,22 @@ impl Render for DetailPanel {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .p_4()
-                    .gap_4()
-                    .child(match &detail {
-                        ResourceDetail::Pod(d)        => render_pod(d, cx),
-                        ResourceDetail::Deployment(d) => render_deployment(d),
-                        ResourceDetail::Service(d)    => render_service(d),
-                        ResourceDetail::ConfigMap(d)  => render_configmap(d),
-                        ResourceDetail::Node(d)       => render_node(d),
-                        ResourceDetail::Generic(d)    => render_generic(d),
-                    }),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .p_4()
+                            .gap_4()
+                            .child(match &detail {
+                                ResourceDetail::Pod(d)        => render_pod(d, cx),
+                                ResourceDetail::Deployment(d) => render_deployment(d),
+                                ResourceDetail::Service(d)    => render_service(d),
+                                ResourceDetail::ConfigMap(d)  => render_configmap(d),
+                                ResourceDetail::Node(d)       => render_node(d),
+                                ResourceDetail::Generic(d)    => render_generic(d),
+                            })
+                            .overflow_y_scrollbar(),
+                    ),
             )
             .into_any_element()
     }
@@ -327,6 +333,56 @@ fn kind_badge(kind: &str) -> impl IntoElement {
         .child(Label::new(kind.to_string()).text_xs().text_color(TEXT_SECONDARY))
 }
 
+fn stat_card(label: &str, value: impl Into<SharedString>, value_color: Hsla) -> impl IntoElement {
+    div()
+        .rounded(px(16.))
+        .border_1()
+        .border_color(BORDER)
+        .bg(Hsla { h: 0.0, s: 0.0, l: 1.0, a: 0.03 })
+        .p(px(12.))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(
+            Label::new(label.to_uppercase())
+                .text_xs()
+                .text_color(TEXT_MUTED),
+        )
+        .child(
+            Label::new(value.into())
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(value_color),
+        )
+}
+
+fn panel_section(content: impl IntoElement) -> impl IntoElement {
+    div()
+        .rounded(px(20.))
+        .border_1()
+        .border_color(BORDER)
+        .bg(Hsla { h: 0.0, s: 0.0, l: 1.0, a: 0.03 })
+        .overflow_hidden()
+        .p(px(16.))
+        .child(content)
+}
+
+fn action_chip(
+    id: impl Into<ElementId>,
+    label: &str,
+) -> impl IntoElement {
+    div()
+        .id(id.into())
+        .cursor_pointer()
+        .px(px(10.))
+        .py(px(4.))
+        .rounded_full()
+        .border_1()
+        .border_color(ACCENT_BORDER)
+        .bg(ACCENT_BG)
+        .child(Label::new(label.to_string()).text_xs().text_color(ACCENT_FG))
+}
+
 fn status_dot_label(status: &str) -> impl IntoElement {
     let color = status_color(status);
     let symbol = status_symbol(status);
@@ -371,32 +427,55 @@ fn render_pod(detail: &PodDetail, cx: &mut Context<DetailPanel>) -> AnyElement {
     let namespace = s.namespace.clone();
     let node = s.node.clone();
 
+    let stat_color = status_color(&s.status);
+
     div()
         .flex()
         .flex_col()
-        .gap_4()
+        .gap_3()
+        // ── Name header ───────────────────────────────────────────────────────
         .child(
             name_header(&s.name, "Pod", &s.namespace, &s.age)
-                .child(status_dot_label(&s.status))
+                .child(status_dot_label(&s.status)),
+        )
+        // ── 2×2 StatCard grid ─────────────────────────────────────────────────
+        .child(
+            div()
+                .grid()
+                .grid_cols(2)
+                .gap(px(8.))
+                .child(stat_card("Namespace", s.namespace.clone(), TEXT_SECONDARY))
+                .child(stat_card("Phase", s.status.clone(), stat_color))
+                .child(stat_card("Restarts", s.restarts.to_string(), if s.restarts > 0 { STATUS_FAILED } else { TEXT_SECONDARY }))
+                .child(stat_card("Node", s.node.clone(), TEXT_SECONDARY)),
+        )
+        // ── Labels ────────────────────────────────────────────────────────────
+        .child(panel_section(render_kv_section("Labels", &detail.labels, cx)))
+        // ── Annotations ───────────────────────────────────────────────────────
+        .child(panel_section(render_kv_section("Annotations", &detail.annotations, cx)))
+        // ── Containers ────────────────────────────────────────────────────────
+        .child(panel_section(render_pod_containers(detail)))
+        // ── Events ───────────────────────────────────────────────────────────
+        .child(panel_section(render_pod_events(detail, cx)))
+        // ── Suggested actions ─────────────────────────────────────────────────
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(Label::new("Suggested actions").text_xs().text_color(TEXT_MUTED))
                 .child(
                     h_flex()
-                        .gap_3()
-                        .child(Label::new(format!("node: {}", s.node)).text_sm().text_color(TEXT_SECONDARY))
-                        .child(Label::new(format!("ready: {}", s.ready)).text_sm().text_color(TEXT_SECONDARY))
-                        .child(Label::new(format!("restarts: {}", s.restarts)).text_sm().text_color(TEXT_SECONDARY)),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
+                        .gap(px(6.))
+                        .flex_wrap()
+                        .child(action_chip("pod-action-logs", "Open logs"))
+                        .child(action_chip("pod-action-analyze", "Analyze with Agent"))
+                        .child(action_chip("pod-action-copy", "Copy name"))
                         .child(copy_chip("pod-copy-name", name, cx))
                         .child(copy_chip("pod-copy-ns", namespace, cx))
                         .child(copy_chip("pod-copy-node", node, cx)),
                 ),
         )
-        .child(render_kv_section("Labels", &detail.labels, cx))
-        .child(render_kv_section("Annotations", &detail.annotations, cx))
-        .child(render_pod_containers(detail))
-        .child(render_pod_events(detail, cx))
         .into_any_element()
 }
 
@@ -418,14 +497,27 @@ fn render_kv_section(
             let kv = format!("{k}={v}");
             let chip_id = SharedString::from(format!("copy-{title}-{k}"));
             section = section.child(
-                h_flex()
-                    .gap_1()
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .py(px(2.))
                     .child(
-                        Label::new(format!("  {kv}"))
-                            .text_sm()
-                            .text_color(TEXT_SECONDARY),
+                        Label::new(k.clone())
+                            .text_xs()
+                            .text_color(TEXT_MUTED),
                     )
-                    .child(copy_chip(chip_id, kv, cx)),
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .flex_wrap()
+                            .child(
+                                Label::new(v.clone())
+                                    .text_sm()
+                                    .text_color(TEXT_SECONDARY),
+                            )
+                            .child(copy_chip(chip_id, kv, cx)),
+                    ),
             );
         }
     }
@@ -574,9 +666,19 @@ fn render_deployment(d: &DeploymentSummary) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap_4()
+        .gap_3()
         .child(name_header(&d.name, "Deployment", &d.namespace, &d.age))
         .child(
+            div()
+                .grid()
+                .grid_cols(2)
+                .gap(px(8.))
+                .child(stat_card("Namespace", d.namespace.clone(), TEXT_SECONDARY))
+                .child(stat_card("Ready", d.ready.clone(), STATUS_RUNNING))
+                .child(stat_card("Up-to-date", d.up_to_date.to_string(), TEXT_SECONDARY))
+                .child(stat_card("Age", d.age.clone(), TEXT_MUTED)),
+        )
+        .child(panel_section(
             div()
                 .flex()
                 .flex_col()
@@ -585,6 +687,21 @@ fn render_deployment(d: &DeploymentSummary) -> AnyElement {
                 .child(kv_row("Ready", d.ready.clone()))
                 .child(kv_row("Up-to-date", d.up_to_date.to_string()))
                 .child(kv_row("Available", d.available.to_string())),
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(Label::new("Suggested actions").text_xs().text_color(TEXT_MUTED))
+                .child(
+                    h_flex()
+                        .gap(px(6.))
+                        .flex_wrap()
+                        .child(action_chip("dep-action-analyze", "Analyze with Agent"))
+                        .child(action_chip("dep-action-pods", "Show pods"))
+                        .child(action_chip("dep-action-copy", "Copy name")),
+                ),
         )
         .into_any_element()
 }
@@ -601,9 +718,19 @@ fn render_service(s: &ServiceSummary) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap_4()
+        .gap_3()
         .child(name_header(&s.name, "Service", &s.namespace, &s.age))
         .child(
+            div()
+                .grid()
+                .grid_cols(2)
+                .gap(px(8.))
+                .child(stat_card("Namespace", s.namespace.clone(), TEXT_SECONDARY))
+                .child(stat_card("Type", s.type_.clone(), type_color))
+                .child(stat_card("Cluster IP", s.cluster_ip.clone(), TEXT_SECONDARY))
+                .child(stat_card("Ports", s.ports.clone(), TEXT_SECONDARY)),
+        )
+        .child(panel_section(
             div()
                 .flex()
                 .flex_col()
@@ -613,6 +740,21 @@ fn render_service(s: &ServiceSummary) -> AnyElement {
                 .child(kv_row("Cluster IP", s.cluster_ip.clone()))
                 .child(kv_row("External IP", s.external_ip.clone()))
                 .child(kv_row("Ports", s.ports.clone())),
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(Label::new("Suggested actions").text_xs().text_color(TEXT_MUTED))
+                .child(
+                    h_flex()
+                        .gap(px(6.))
+                        .flex_wrap()
+                        .child(action_chip("svc-action-analyze", "Analyze with Agent"))
+                        .child(action_chip("svc-action-endpoints", "Show endpoints"))
+                        .child(action_chip("svc-action-copy", "Copy name")),
+                ),
         )
         .into_any_element()
 }
@@ -715,6 +857,12 @@ fn render_generic(d: &GenericResourceDetail) -> AnyElement {
 // ── Node renderer ─────────────────────────────────────────────────────────────
 
 fn render_node(n: &NodeSummary) -> AnyElement {
+    let cpu_ratio = if n.cpu_capacity_milli > 0 {
+        (n.cpu_allocatable_milli as f64 / n.cpu_capacity_milli as f64 * 100.0) as i64
+    } else { 0 };
+    let mem_ratio = if n.memory_capacity_bytes > 0 {
+        (n.memory_allocatable_bytes as f64 / n.memory_capacity_bytes as f64 * 100.0) as i64
+    } else { 0 };
     let cpu_detail = format!(
         "{} / {}",
         fmt_cpu(n.cpu_allocatable_milli),
@@ -725,16 +873,27 @@ fn render_node(n: &NodeSummary) -> AnyElement {
         fmt_memory(n.memory_allocatable_bytes),
         fmt_memory(n.memory_capacity_bytes),
     );
+    let node_status_color = status_color(&n.status);
 
     div()
         .flex()
         .flex_col()
-        .gap_4()
+        .gap_3()
         .child(
             name_header(&n.name, "Node", &n.roles, &n.age)
                 .child(status_dot_label(&n.status)),
         )
         .child(
+            div()
+                .grid()
+                .grid_cols(2)
+                .gap(px(8.))
+                .child(stat_card("Status", n.status.clone(), node_status_color))
+                .child(stat_card("CPU%", format!("{}%", cpu_ratio), TEXT_SECONDARY))
+                .child(stat_card("Mem%", format!("{}%", mem_ratio), TEXT_SECONDARY))
+                .child(stat_card("Pods", n.pod_capacity.to_string(), TEXT_SECONDARY)),
+        )
+        .child(panel_section(
             div()
                 .flex()
                 .flex_col()
@@ -743,8 +902,8 @@ fn render_node(n: &NodeSummary) -> AnyElement {
                 .child(kv_row("Version", n.version.clone()))
                 .child(kv_row("OS", n.os_image.clone()))
                 .child(kv_row("Pod capacity", n.pod_capacity.to_string())),
-        )
-        .child(
+        ))
+        .child(panel_section(
             div()
                 .flex()
                 .flex_col()
@@ -762,6 +921,20 @@ fn render_node(n: &NodeSummary) -> AnyElement {
                     n.memory_capacity_bytes,
                     mem_detail,
                 )),
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(Label::new("Suggested actions").text_xs().text_color(TEXT_MUTED))
+                .child(
+                    h_flex()
+                        .gap(px(6.))
+                        .flex_wrap()
+                        .child(action_chip("node-action-analyze", "Analyze with Agent"))
+                        .child(action_chip("node-action-pods", "Show pods")),
+                ),
         )
         .into_any_element()
 }

@@ -3,13 +3,15 @@ use std::collections::HashSet;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::dock::{Panel, PanelControl, PanelEvent};
 use gpui_component::h_flex;
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
 use kairo_core::models::{RelationType, ResourceRelationship, ResourceScope, ResourceTreeNode, TreeNodeKind};
 
 use crate::theme::{
-    HOVER_BG, SELECTED_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING, TEXT_MUTED,
-    TEXT_PRIMARY, TEXT_SECONDARY,
+    BORDER, HOVER_BG, SELECTED_BG, STATUS_FAILED, STATUS_PENDING, STATUS_RUNNING,
+    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
 // ── Public event ──────────────────────────────────────────────────────────────
@@ -43,24 +45,55 @@ struct FlatRow {
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
+/// KindGroup label strings (as produced by `build_resource_tree`) that can be
+/// toggled on/off in the dropdown filter. The label must match exactly.
+const FILTERABLE_KINDS: &[&str] = &[
+    "Pods",
+    "Deployments",
+    "Services",
+    "Ingresses",
+    "ConfigMaps",
+    "Nodes",
+    "Cluster Resources",
+];
+
 pub struct ResourceTreePanel {
     root: Option<ResourceTreeNode>,
     /// Set of node IDs that are currently expanded.
     expanded: HashSet<String>,
+    /// IDs seen at least once — prevents re-expanding nodes the user has collapsed.
+    seen_ids: HashSet<String>,
     selected: Option<String>,
     /// Flattened, visible rows rebuilt on every expand/collapse or tree update.
     rows: Vec<FlatRow>,
     focus_handle: FocusHandle,
+    filter_input: Entity<InputState>,
+    filter: String,
+    /// Kind labels (matching FILTERABLE_KINDS labels) that are hidden from the tree.
+    hidden_kinds: HashSet<String>,
 }
 
 impl ResourceTreePanel {
-    pub fn new(cx: &mut App) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter resources…"));
+        cx.subscribe(&filter_input, |this, state, ev: &InputEvent, cx| {
+            if let InputEvent::Change = ev {
+                this.filter = state.read(cx).value().to_string();
+                this.rebuild_rows();
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             root: None,
             expanded: HashSet::new(),
+            seen_ids: HashSet::new(),
             selected: None,
             rows: vec![],
             focus_handle: cx.focus_handle(),
+            filter_input,
+            filter: String::new(),
+            hidden_kinds: HashSet::new(),
         }
     }
 
@@ -75,11 +108,14 @@ impl ResourceTreePanel {
     }
 
     fn auto_expand_defaults(&mut self, node: &ResourceTreeNode) {
-        match node.kind {
-            TreeNodeKind::ClusterRoot | TreeNodeKind::Namespace | TreeNodeKind::KindGroup(_) => {
-                self.expanded.insert(node.id.clone());
+        let first_time = self.seen_ids.insert(node.id.clone());
+        if first_time {
+            match node.kind {
+                TreeNodeKind::ClusterRoot | TreeNodeKind::Namespace | TreeNodeKind::KindGroup(_) => {
+                    self.expanded.insert(node.id.clone());
+                }
+                _ => {}
             }
-            _ => {}
         }
         for child in &node.children {
             self.auto_expand_defaults(child);
@@ -90,8 +126,13 @@ impl ResourceTreePanel {
         self.rows.clear();
         if let Some(root) = &self.root {
             let expanded = &self.expanded;
+            let hidden = &self.hidden_kinds;
             let mut rows = Vec::new();
-            Self::collect_rows(root, 0, expanded, &mut rows);
+            Self::collect_rows(root, 0, expanded, hidden, &mut rows);
+            if !self.filter.is_empty() {
+                let q = self.filter.to_lowercase();
+                rows.retain(|r| r.name.to_lowercase().contains(&q));
+            }
             self.rows = rows;
         }
     }
@@ -100,8 +141,15 @@ impl ResourceTreePanel {
         node: &ResourceTreeNode,
         depth: usize,
         expanded: &HashSet<String>,
+        hidden: &HashSet<String>,
         rows: &mut Vec<FlatRow>,
     ) {
+        // Skip entire KindGroup subtrees whose kind label is hidden.
+        if let TreeNodeKind::KindGroup(ref label) = node.kind {
+            if hidden.contains(label.as_str()) {
+                return;
+            }
+        }
         let is_expanded = expanded.contains(&node.id);
         let has_children = !node.children.is_empty();
         // Cap relationship badges at 2 to avoid overflow
@@ -120,7 +168,7 @@ impl ResourceTreePanel {
         });
         if is_expanded {
             for child in &node.children {
-                Self::collect_rows(child, depth + 1, expanded, rows);
+                Self::collect_rows(child, depth + 1, expanded, hidden, rows);
             }
         }
     }
@@ -160,6 +208,37 @@ impl Panel for ResourceTreePanel {
 
     fn zoomable(&self, _: &App) -> Option<PanelControl> {
         None
+    }
+
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let weak = cx.entity().downgrade();
+        let menu = menu.separator().item(PopupMenuItem::label("Show / Hide"));
+        FILTERABLE_KINDS.iter().fold(menu, |menu, &label| {
+            let is_hidden = self.hidden_kinds.contains(label);
+            let w = weak.clone();
+            let label_str = label.to_string();
+            menu.item(
+                PopupMenuItem::new(label)
+                    .checked(!is_hidden)
+                    .on_click(move |_, _, cx| {
+                        w.update(cx, |this, cx| {
+                            if this.hidden_kinds.contains(&label_str) {
+                                this.hidden_kinds.remove(&label_str);
+                            } else {
+                                this.hidden_kinds.insert(label_str.clone());
+                            }
+                            this.rebuild_rows();
+                            cx.notify();
+                        })
+                        .ok();
+                    }),
+            )
+        })
     }
 }
 
@@ -358,12 +437,32 @@ impl Render for ResourceTreePanel {
                     )
                 });
 
-            list = list.child(row_el);
+            // Namespace nodes get a subtle glass background wrapper.
+            if matches!(row.kind, TreeNodeKind::Namespace) {
+                list = list.child(
+                    div()
+                        .rounded(px(12.))
+                        .bg(Hsla { h: 0.0, s: 0.0, l: 1.0, a: 0.02 })
+                        .border_1()
+                        .border_color(BORDER)
+                        .child(row_el),
+                );
+            } else {
+                list = list.child(row_el);
+            }
         }
 
         div()
             .size_full()
-            .overflow_y_scrollbar()
-            .child(list)
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(6.))
+                    .flex_shrink_0()
+                    .child(Input::new(&self.filter_input)),
+            )
+            .child(div().flex_1().overflow_y_scrollbar().child(list))
     }
 }

@@ -11,5 +11,4 @@ pub mod resource_list;
 pub mod resource_tree;
 pub mod search_bar;
 pub mod settings_panel;
-pub mod stats_panel;
 pub mod yaml_viewer;
