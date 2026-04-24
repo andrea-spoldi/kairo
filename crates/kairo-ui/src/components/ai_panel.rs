@@ -174,8 +174,10 @@ impl AiPanel {
 
     /// Update the provider + model label shown in the toolbar.
     pub fn set_provider_label(&mut self, label: Option<String>, cx: &mut Context<Self>) {
-        self.provider_label = label;
-        cx.notify();
+        if self.provider_label != label {
+            self.provider_label = label;
+            cx.notify();
+        }
     }
 
     /// Bind this session to an investigation scope (shows scope chip in header).
