@@ -6,6 +6,7 @@ mod components;
 mod kube_runtime;
 mod mcp_client;
 mod scope;
+mod stories;
 mod theme;
 
 use app::Workspace;
@@ -48,24 +49,28 @@ fn fix_exec_path() {
 }
 
 fn main() {
+    // Check for story mode before any heavy initialisation.
+    let story_name = std::env::args()
+        .skip_while(|a| a != "--story")
+        .nth(1);
+
     // Must run before kube_runtime::init() so exec credential plugins are
     // resolvable inside the tokio runtime's spawned tasks.
     fix_exec_path();
 
     tracing_subscriber::fmt::init();
 
-    // Initialise the dedicated tokio runtime for kube-rs operations.
-    // GPUI on macOS uses Grand Central Dispatch, not tokio, so kube-rs (which
-    // depends on tower/hyper) must run on a real tokio executor.
-    kube_runtime::init();
+    // The full story renders a real Workspace so it needs the kube runtime
+    // (even though no cluster is connected).  Isolated component stories don't.
+    let needs_kube_runtime = story_name.is_none() || story_name.as_deref() == Some("full");
+    if needs_kube_runtime {
+        kube_runtime::init();
+    }
 
     gpui_platform::application()
         .with_assets(Assets)
-        .run(|cx: &mut App| {
+        .run(move |cx: &mut App| {
             gpui_component::init(cx);
-            // Switch the component library to dark mode so DataTable, Button,
-            // Input, Select, and all other widgets use colours calibrated for
-            // a dark background instead of the default light-mode palette.
             gpui_component::theme::Theme::change(
                 gpui_component::theme::ThemeMode::Dark,
                 None,
@@ -73,17 +78,14 @@ fn main() {
             );
             cx.activate(true);
 
-            // Global shortcuts (no context — fire anywhere).
+            // Register all keybindings up front — full story mode renders a real
+            // Workspace so it needs them; isolated component stories ignore them.
             cx.bind_keys([
                 KeyBinding::new("cmd-k",     OpenCommandPalette, None),
                 KeyBinding::new("ctrl-k",    OpenCommandPalette, None),
                 KeyBinding::new("cmd-,",     OpenSettings,       None),
                 KeyBinding::new("ctrl-,",    OpenSettings,       None),
             ]);
-
-            // Pod list navigation (fires only when PodList key context is focused).
-            // "&& !Input" prevents these from firing when a text field inside
-            // the PodList panel has focus (Input declares key_context("Input")).
             cx.bind_keys([
                 KeyBinding::new("j",      NavigateDown,      Some("PodList && !Input")),
                 KeyBinding::new("k",      NavigateUp,        Some("PodList && !Input")),
@@ -94,14 +96,17 @@ fn main() {
                 KeyBinding::new("g",      ToggleGrouping,    Some("PodList && !Input")),
                 KeyBinding::new("y",      YankName,          Some("PodList && !Input")),
             ]);
-
-            // Palette navigation (fires only when Palette key context is focused).
             cx.bind_keys([
                 KeyBinding::new("down",   NavigateDown,       Some("Palette")),
                 KeyBinding::new("up",     NavigateUp,         Some("Palette")),
                 KeyBinding::new("return", ConfirmSelection,   Some("Palette")),
                 KeyBinding::new("escape", CloseCommandPalette, Some("Palette")),
             ]);
+
+            if let Some(name) = &story_name {
+                stories::run(name, cx);
+                return;
+            }
 
             cx.spawn(async move |cx| {
                 cx.open_window(

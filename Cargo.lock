@@ -3361,7 +3361,7 @@ dependencies = [
 
 [[package]]
 name = "kairo-config"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "dirs 5.0.1",
  "serde",
@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "kairo-ui"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "futures-util",

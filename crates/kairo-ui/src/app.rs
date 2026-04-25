@@ -222,8 +222,6 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        window.set_window_title("Kairo");
-        // ── Load kubeconfig contexts synchronously ────────────────────────────
         let mut init_error: Option<String> = None;
         let (contexts, current_ctx) = match KubeClient::list_contexts() {
             Ok(names) => {
@@ -239,6 +237,52 @@ impl Workspace {
                 (Vec::new(), None)
             }
         };
+        let mut ws = Self::build(contexts, current_ctx.clone(), window, cx);
+        if let Some(err) = init_error {
+            ws.status_alert = Some(StatusAlert::new(
+                AlertLevel::Error,
+                format!("Kubeconfig: {err}"),
+            ));
+        }
+        if let Some(ctx) = current_ctx {
+            ws.switch_context(ctx.to_string(), window, cx);
+        }
+        ws.init_mcp();
+        ws
+    }
+
+    /// Construct a fully-rendered Workspace with mock data and no cluster
+    /// connection — for story mode (`--story full`).
+    pub(crate) fn new_story(
+        pods: Vec<kairo_core::models::PodSummary>,
+        events: Vec<kairo_core::ClusterEvent>,
+        namespaces: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mock_ctx = SharedString::from("story-mock-cluster");
+        let mut ws = Self::build(vec![mock_ctx.clone()], Some(mock_ctx), window, cx);
+        ws.namespaces = namespaces.iter().map(|s| SharedString::from(s.clone())).collect();
+        ws.namespaces.sort();
+        let ns_items = ws.ns_items();
+        ws.ns_select.update(cx, |state, cx| state.set_items(ns_items, window, cx));
+        ws.all_pods = pods.clone();
+        ws.apply_namespace_filter(cx);
+        let pods_ref = ws.all_pods.clone();
+        ws.health_panel.update(cx, |panel, cx| panel.update_pods(&pods_ref, cx));
+        for ev in events {
+            ws.event_feed.update(cx, |feed, cx| feed.push_event(ev, cx));
+        }
+        ws
+    }
+
+    fn build(
+        contexts: Vec<SharedString>,
+        current_ctx: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        window.set_window_title("Kairo");
 
         let initial_ctx_ix = current_ctx.as_ref().and_then(|c| {
             contexts
@@ -580,7 +624,7 @@ impl Workspace {
         // ── Start GPUI poll loop ──────────────────────────────────────────────
         let poll_task = Self::start_poll_loop(events.clone(), window, cx);
 
-        let mut ws = Self {
+        Self {
             dock_area,
             context_select,
             ns_select,
@@ -624,25 +668,7 @@ impl Workspace {
             status_alert: None,
             agent_scope: AgentScope::None,
             selected_event: None,
-        };
-
-        // Connect to the current context
-        if let Some(ctx) = current_ctx {
-            ws.switch_context(ctx.to_string(), window, cx);
         }
-
-        // Surface kubeconfig load errors immediately in the status bar.
-        if let Some(err) = init_error {
-            ws.status_alert = Some(StatusAlert::new(
-                AlertLevel::Error,
-                format!("Kubeconfig: {err}"),
-            ));
-        }
-
-        // Attempt MCP connection if enabled in config.
-        ws.init_mcp();
-
-        ws
     }
 
     // ── Poll loop ──────────────────────────────────────────────────────────────
