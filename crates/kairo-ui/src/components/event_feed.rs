@@ -191,6 +191,50 @@ impl Render for EventFeedPanel {
     }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn event_to_scope(ev: &ClusterEvent) -> AgentScope {
+    let resource_ref = ResourceRef {
+        kind: ev.object_kind.clone(),
+        name: ev.object_name.clone(),
+        namespace: if ev.namespace.is_empty() { None } else { Some(ev.namespace.clone()) },
+    };
+    let event_ref = EventRef {
+        reason: ev.reason.clone(),
+        message: ev.message.clone(),
+        event_type: ev.event_type.clone(),
+        count: ev.count,
+    };
+    AgentScope::Event { resource: resource_ref, event: event_ref }
+}
+
+fn event_action_chip(
+    label: &'static str,
+    accent: bool,
+    handler: impl Fn(&mut EventFeedPanel, &mut Window, &mut Context<EventFeedPanel>) + 'static,
+    cx: &mut Context<EventFeedPanel>,
+) -> impl IntoElement {
+    let (border_c, bg_c, text_c) = if accent {
+        (ACCENT_BORDER, ACCENT_BG, ACCENT_FG)
+    } else {
+        (BORDER, SURFACE, TEXT_PRIMARY)
+    };
+    div()
+        .cursor_pointer()
+        .px(px(8.))
+        .py(px(3.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(border_c)
+        .bg(bg_c)
+        .hover(|s| s.bg(HOVER_BG))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            handler(this, window, cx);
+        }))
+        .child(Label::new(label).text_xs().text_color(text_c))
+}
+
 // ── Card renderer ─────────────────────────────────────────────────────────────
 
 fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> impl IntoElement {
@@ -273,62 +317,11 @@ fn render_event_card(ev: &ClusterEvent, cx: &mut Context<EventFeedPanel>) -> imp
                         .text_color(TEXT_MUTED),
                 )
                 .child(div().flex_1())
-                // "Inspect" button — opens the inspector
-                .child(
-                    div()
-                        .cursor_pointer()
-                        .px(px(8.))
-                        .py(px(3.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(BORDER)
-                        .bg(SURFACE)
-                        .hover(|s| s.bg(HOVER_BG))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |_this, _, _, cx| {
-                                cx.stop_propagation();
-                                cx.emit(EventBodyClicked(ev_inspect.clone()));
-                            }),
-                        )
-                        .child(Label::new("Inspect").text_xs().text_color(TEXT_PRIMARY)),
-                )
-                // "Send to Agent" button — skips inspector, goes straight to agent
-                .child(
-                    div()
-                        .cursor_pointer()
-                        .px(px(8.))
-                        .py(px(3.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(ACCENT_BORDER)
-                        .bg(ACCENT_BG)
-                        .hover(|s| s.bg(HOVER_BG))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |_this, _, _, cx| {
-                                cx.stop_propagation();
-                                let ev = &ev_agent;
-                                let resource_ref = ResourceRef {
-                                    kind: ev.object_kind.clone(),
-                                    name: ev.object_name.clone(),
-                                    namespace: if ev.namespace.is_empty() {
-                                        None
-                                    } else {
-                                        Some(ev.namespace.clone())
-                                    },
-                                };
-                                let event_ref = EventRef {
-                                    reason: ev.reason.clone(),
-                                    message: ev.message.clone(),
-                                    event_type: ev.event_type.clone(),
-                                    count: ev.count,
-                                };
-                                let scope = AgentScope::Event { resource: resource_ref, event: event_ref };
-                                cx.emit(SendEventDirectToAgent(scope));
-                            }),
-                        )
-                        .child(Label::new("Send to Agent").text_xs().text_color(ACCENT_FG)),
-                ),
+                .child(event_action_chip("Inspect", false, move |_this, _, cx| {
+                    cx.emit(EventBodyClicked(ev_inspect.clone()));
+                }, cx))
+                .child(event_action_chip("Send to Agent", true, move |_this, _, cx| {
+                    cx.emit(SendEventDirectToAgent(event_to_scope(&ev_agent)));
+                }, cx)),
         )
 }

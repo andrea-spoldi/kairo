@@ -69,6 +69,7 @@ pub struct ResourceTreePanel {
     focus_handle: FocusHandle,
     filter_input: Entity<InputState>,
     filter: String,
+    filter_lower: String,
     /// Kind labels (matching FILTERABLE_KINDS labels) that are hidden from the tree.
     hidden_kinds: HashSet<String>,
 }
@@ -79,6 +80,7 @@ impl ResourceTreePanel {
         cx.subscribe(&filter_input, |this, state, ev: &InputEvent, cx| {
             if let InputEvent::Change = ev {
                 this.filter = state.read(cx).value().to_string();
+                this.filter_lower = this.filter.to_lowercase();
                 this.rebuild_rows();
                 cx.notify();
             }
@@ -93,6 +95,7 @@ impl ResourceTreePanel {
             focus_handle: cx.focus_handle(),
             filter_input,
             filter: String::new(),
+            filter_lower: String::new(),
             hidden_kinds: HashSet::new(),
         }
     }
@@ -129,9 +132,9 @@ impl ResourceTreePanel {
             let hidden = &self.hidden_kinds;
             let mut rows = Vec::new();
             Self::collect_rows(root, 0, expanded, hidden, &mut rows);
-            if !self.filter.is_empty() {
-                let q = self.filter.to_lowercase();
-                rows.retain(|r| r.name.to_lowercase().contains(&q));
+            if !self.filter_lower.is_empty() {
+                let q = &self.filter_lower;
+                rows.retain(|r| r.name.to_lowercase().contains(q.as_str()));
             }
             self.rows = rows;
         }
