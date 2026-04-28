@@ -1,3 +1,69 @@
+# CLAUDE.md
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
 # Kairo
 
 A native Rust desktop Kubernetes IDE (think Lens, but without Electron).
@@ -126,110 +192,6 @@ cargo run -p kairo-ui             # launch the app
 - Init repo on first scaffold
 - Conventional Commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
 - Commit after each completed phase, not after every file
-
-## Phase Plan
-
-Work through phases in order. Each phase must compile and pass `cargo clippy` before moving on.
-
-### Phase 1 — Scaffold (start here)
-
-Create the workspace, all `Cargo.toml` files, and stub modules.
-`main.rs` opens an empty GPUI window with a title. Everything compiles.
-
-**Critical first step**: verify that the gpui + gpui-component git deps resolve
-and compile together. If they don’t, find a compatible rev pair before proceeding.
-
-Use `gpui_component::init(cx)` in the app entry point and wrap the root view in
-a `gpui_component::Root`. Refer to the gpui-component getting started guide:
-https://longbridge.github.io/gpui-component/docs/getting-started
-
-**Done when:** `cargo check` succeeds and `cargo run -p kairo-ui` opens a window.
-
-### Phase 2 — Core: Client & Models
-
-Implement in `kairo-core`:
-
-- `client.rs`: load kubeconfig, list contexts, create a client for a given context
-- `models.rs`: `PodSummary` (name, namespace, status, ready count, restarts, age, node),
-  `PodDetail`, `ContainerStatus`, `PodEvent` — with `From<Pod>` conversions
-- Unit tests for model conversions (use fixture JSON)
-
-**Done when:** `cargo test -p kairo-core` passes with model conversion tests.
-
-### Phase 3 — Core: Watchers & Logs
-
-Implement in `kairo-core`:
-
-- `watchers.rs`: pod watcher using `kube::runtime::watcher` that sends `PodSummary`
-  updates through a `tokio::sync::mpsc` channel. Namespace watcher for the namespace list.
-- `logs.rs`: async log stream for a specific pod/container using the K8s log follow API
-
-**Done when:** an integration example connects to a live cluster and prints pod events to stdout.
-
-### Phase 4 — UI: App Shell
-
-Build the GPUI app shell using gpui-component’s Dock layout:
-
-- DockArea with: left sidebar (resource tree placeholder), main panel (pod list),
-  right panel (detail, hidden by default), bottom panel (logs, hidden by default)
-- TitleBar with app name and placeholder dropdowns
-- Theme constants: dark background, status colors (green/yellow/red/grey)
-
-Reference the gpui-component DockArea docs and story examples.
-
-**Done when:** `cargo run -p kairo-ui` shows the dock layout with placeholder content.
-
-### Phase 5 — UI: Context & Namespace Selectors
-
-Wire real data:
-
-- Context switcher dropdown in title bar, populated from kubeconfig
-- Namespace selector dropdown, populated by namespace watcher
-- Switching context reinitializes the kube client and restarts watchers
-- Switching namespace filters the pod list
-
-**Done when:** dropdowns show real contexts/namespaces from the local kubeconfig.
-
-### Phase 6 — UI: Pod List
-
-- Virtualized table using gpui-component’s Table component
-- Columns: Name, Namespace, Status (colored dot), Ready, Restarts, Age, Node
-- Real-time updates from the pod watcher channel
-- Status colors: Running=green, Pending=yellow, Failed/CrashLoopBackOff=red, Succeeded=grey
-
-**Done when:** pod list shows real pods and updates live (test by scaling a deployment).
-
-### Phase 7 — UI: Pod Detail Panel
-
-- Clicking a pod row opens/updates the right dock panel
-- Sections: Metadata (labels, annotations), Conditions, Container Statuses, Events
-- Events fetched via field selector for the selected pod
-
-**Done when:** clicking a pod shows its detail; events load correctly.
-
-### Phase 8 — UI: Log Viewer
-
-- Bottom dock panel streams logs from the selected pod’s first container
-- Auto-scroll to bottom with pause/resume toggle
-- Container selector if pod has multiple containers
-
-**Done when:** log panel streams real logs with follow behavior.
-
-### Phase 9 — UI: Search & Filter
-
-- Search bar above the pod list (gpui-component Input)
-- Filter by: name substring, label selector (key=value), status dropdown
-- Filters apply client-side on the cached pod list
-
-**Done when:** filtering works and updates the list in real-time.
-
-## Stretch Goals (after Phase 9 is solid)
-
-- Vim-style `j/k` navigation in pod list, `/` to focus search
-- Resource type selector (Deployments, Services, ConfigMaps, etc.)
-- Raw YAML viewer with syntax highlighting (gpui-component Editor)
-- Node overview with resource allocation bars
-- Multi-cluster tabs
 
 ## Key References
 
