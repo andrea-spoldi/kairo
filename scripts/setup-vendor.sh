@@ -7,12 +7,10 @@
 #
 # What it does:
 #   1. Clones gpui-component at the pinned rev used by Cargo.lock
-#   2. Rewrites workspace-inherited Cargo.toml fields with explicit values
-#      (gpui-component has its own workspace; placing it under kairo's workspace
-#       would cause "value from workspace member manifests" errors otherwise)
+#   2. Rewrites workspace-inherited fields in the crate Cargo.tomls with
+#      explicit values so they build under kairo's workspace
 #   3. Patches tab_panel.rs to hide the "Zoom In" context-menu entry when a
-#      panel returns zoomable() = None (upstream always renders it disabled,
-#      which clutters every panel menu with a greyed-out item)
+#      panel returns zoomable() = None
 #
 # Usage:
 #   bash scripts/setup-vendor.sh
@@ -22,7 +20,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_DIR="${REPO_ROOT}/vendor/gpui-component"
 GPUI_COMPONENT_REV="f19f896fa193c57768eaf5403e4659737e3ba5ba"
-GPUI_COMPONENT_VERSION="0.5.1"
 
 # -- Guard ---------------------------------------------------------------------
 if [[ -d "${VENDOR_DIR}/.git" ]]; then
@@ -48,115 +45,169 @@ git clone \
 echo "Checking out rev ${GPUI_COMPONENT_REV}..."
 git -C "${VENDOR_DIR}" checkout --quiet "${GPUI_COMPONENT_REV}"
 
-# -- Fix workspace-inherited Cargo.toml fields ---------------------------------
-# gpui-component uses `version.workspace = true` etc. in its crate Cargo.tomls.
-# Under kairo's workspace those keys resolve from kairo's [workspace.package],
-# producing wrong values. Replace them with the explicit gpui-component values.
+# -- Patch Cargo.toml files ----------------------------------------------------
+# gpui-component crates use `dep.workspace = true` / `dep = { workspace = true }`
+# throughout their Cargo.tomls. Under kairo's workspace those references fail
+# because kairo's Cargo.toml doesn't define [workspace.dependencies].
+#
+# This Python script replaces every workspace dep reference with the explicit
+# version from gpui-component's own [workspace.dependencies] (Cargo.toml root).
 echo "Patching vendor Cargo.toml files (workspace -> explicit)..."
 
-for TOML in \
+python3 - \
   "${VENDOR_DIR}/crates/ui/Cargo.toml" \
-  "${VENDOR_DIR}/crates/assets/Cargo.toml"
-do
-  if [[ ! -f "${TOML}" ]]; then
-    echo "ERROR: expected file not found: ${TOML}" >&2
-    exit 1
-  fi
-  sed -i.bak \
-    -e "s|^version\\.workspace\\s*=\\s*true|version = \"${GPUI_COMPONENT_VERSION}\"|" \
-    -e "s|^edition\\.workspace\\s*=\\s*true|edition = \"2021\"|" \
-    -e "s|^authors\\.workspace\\s*=\\s*true|# authors removed|" \
-    -e "s|^description\\.workspace\\s*=\\s*true|# description removed|" \
-    -e "s|^homepage\\.workspace\\s*=\\s*true|# homepage removed|" \
-    -e "s|^repository\\.workspace\\s*=\\s*true|# repository removed|" \
-    -e "s|^license\\.workspace\\s*=\\s*true|license = \"MIT\"|" \
-    "${TOML}"
-  rm -f "${TOML}.bak"
-done
+  "${VENDOR_DIR}/crates/assets/Cargo.toml" \
+<<'PYEOF'
+import re, sys
+
+# Explicit specs for every dep gpui-component crates inherit via workspace.
+# Sourced from gpui-component's Cargo.toml [workspace.dependencies] at rev f19f896.
+WORKSPACE_DEPS = {
+    'anyhow':                 '"1"',
+    'log':                    '"0.4"',
+    'lsp-types':              '{ version = "0.97.0", features = ["proposed"] }',
+    'notify':                 '"7.0.0"',
+    'ropey':                  '{ version = "=2.0.0-beta.1", features = ["metric_lines_lf", "metric_utf16"] }',
+    'rust-i18n':              '"3"',
+    'schemars':               '"1"',
+    'serde':                  '{ version = "1.0.219", features = ["derive"] }',
+    'serde_json':             '"1"',
+    'serde_repr':             '"0.1"',
+    'smallvec':               '"1"',
+    'smol':                   '"2"',
+    'sum-tree':               '{ version = "0.2.0", package = "zed-sum-tree" }',
+    'tracing':                '"0.1.41"',
+    'wasm-bindgen':           '"0.2.113"',
+    'gpui':                   '{ git = "https://github.com/zed-industries/zed" }',
+    'gpui_macros':            '{ git = "https://github.com/zed-industries/zed" }',
+    'gpui-component-macros':  '{ path = "../macros", version = "0.5.1" }',
+    # wasm-only; not compiled for macOS/Linux but must be syntactically valid
+    'reqwest': (
+        '{ git = "https://github.com/zed-industries/reqwest.git"'
+        ', rev = "c15662463bda39148ba154100dd44d3fba5873a4"'
+        ', default-features = false'
+        ', features = ["charset","http2","macos-system-configuration","multipart"'
+        ',"rustls-tls-native-roots","socks","stream"]'
+        ', package = "zed-reqwest", version = "0.12.15-zed" }'
+    ),
+}
+
+def patch(path):
+    with open(path) as f:
+        src = f.read()
+
+    # 1. Dotted package field: `edition.workspace = true`
+    def replace_pkg_field(m):
+        key = m.group(1)
+        defaults = {'edition': '"2021"', 'license': '"Apache-2.0"'}
+        return f'{key} = {defaults.get(key, "# removed")}' if key not in WORKSPACE_DEPS else m.group(0)
+    src = re.sub(r'^([\w-]+)\.workspace\s*=\s*true\s*$', replace_pkg_field, src, flags=re.MULTILINE)
+
+    # 2. Dotted dep: `anyhow.workspace = true`
+    def replace_dotted_dep(m):
+        name = m.group(1)
+        return f'{name} = {WORKSPACE_DEPS[name]}' if name in WORKSPACE_DEPS else m.group(0)
+    src = re.sub(r'^([\w_-]+)\.workspace\s*=\s*true\s*$', replace_dotted_dep, src, flags=re.MULTILINE)
+
+    # 3. Inline table, workspace only: `name = { workspace = true }`
+    def replace_inline_simple(m):
+        name = m.group(1)
+        return f'{name} = {WORKSPACE_DEPS[name]}' if name in WORKSPACE_DEPS else m.group(0)
+    src = re.sub(r'^([\w_-]+)\s*=\s*\{\s*workspace\s*=\s*true\s*\}\s*$',
+                 replace_inline_simple, src, flags=re.MULTILINE)
+
+    # 4. Inline table with extra fields: `name = { workspace = true, features = [...] }`
+    def replace_inline_extra(m):
+        name, rest = m.group(1), m.group(2)
+        if name not in WORKSPACE_DEPS:
+            return m.group(0)
+        base = WORKSPACE_DEPS[name]
+        extra = re.sub(r'\bworkspace\s*=\s*true,?\s*', '', rest).strip().strip(',').strip()
+        if not extra:
+            return f'{name} = {base}'
+        if base.startswith('"'):
+            return f'{name} = {{ version = {base}, {extra} }}'
+        # base is an inline table: insert extra before closing brace
+        return f'{name} = {{ {base[1:-1].rstrip().rstrip(",")}, {extra} }}'
+    src = re.sub(r'^([\w_-]+)\s*=\s*\{([^}]*workspace\s*=\s*true[^}]*)\}\s*$',
+                 replace_inline_extra, src, flags=re.MULTILINE)
+
+    # 5. Remove [lints] workspace = true section (not valid under kairo workspace)
+    src = re.sub(r'\[lints\]\s*\nworkspace\s*=\s*true\n?', '', src)
+
+    with open(path, 'w') as f:
+        f.write(src)
+    print(f"  patched {path}")
+
+for p in sys.argv[1:]:
+    patch(p)
+PYEOF
 
 # -- Patch tab_panel.rs --------------------------------------------------------
-# Upstream tab_panel.rs adds a "Zoom In" context-menu item unconditionally,
-# then disables it when the panel is not zoomable. Kairo panels return None
-# for zoomable(), so every right-click shows a useless greyed "Zoom In".
+# The dropdown menu in tab_panel always renders a Zoom In/Out item, disabling
+# it via menu_with_disabled() when the panel is not zoomable. Kairo panels
+# return None for zoomable(), so every panel menu shows a greyed Zoom item.
 #
-# The patch wraps the zoom entry in a .when_some(zoomable, ...) guard so it
-# only appears when the panel actually supports zooming.
+# Fix: wrap the separator + zoom entry in .when(zoomable, ...) so the item is
+# absent entirely instead of being present but disabled.
 echo "Patching tab_panel.rs (conditional zoom menu item)..."
 
 TAB_PANEL="${VENDOR_DIR}/crates/ui/src/dock/tab_panel.rs"
 if [[ ! -f "${TAB_PANEL}" ]]; then
-  echo "ERROR: tab_panel.rs not found at expected path: ${TAB_PANEL}" >&2
+  echo "ERROR: tab_panel.rs not found: ${TAB_PANEL}" >&2
   exit 1
 fi
 
-# Check whether the patch is already applied (idempotent re-runs).
-if grep -q 'when_some.*Zoom In\|Zoom In.*when_some' "${TAB_PANEL}" 2>/dev/null; then
-  echo "tab_panel.rs already patched."
-else
-  python3 - "${TAB_PANEL}" <<'PYEOF'
-import sys, re
+python3 - "${TAB_PANEL}" <<'PYEOF'
+import sys
 
 path = sys.argv[1]
 with open(path) as f:
     src = f.read()
 
-# Upstream form at rev f19f896:
-#
-#   .menu_item(
-#       MenuItem::new("Zoom In")
-#           .action(cx.handler_for::<ZoomIn>(...))
-#           .disabled(zoomable.is_none()),
-#   )
-#
-# We remove the .disabled(...) guard and wrap the whole block in
-# .when_some(zoomable, ...) so the entry is absent rather than greyed out.
+# Already patched (idempotent re-runs)
+if '.when(zoomable' in src:
+    print("  tab_panel.rs already patched.")
+    sys.exit(0)
 
-ZOOM_PATTERN = re.compile(
-    r'(\s*)\.menu_item\(\s*\n'
-    r'\s*MenuItem::new\("Zoom In"\)'
-    r'.*?'
-    r'\.disabled\(zoomable\.is_none\(\)\),?\s*\n'
-    r'\s*\)',
-    re.DOTALL
+OLD = (
+    '                .separator()\n'
+    '                .menu_with_disabled(\n'
+    '                    if zoomed {\n'
+    '                        t!("Dock.Zoom Out")\n'
+    '                    } else {\n'
+    '                        t!("Dock.Zoom In")\n'
+    '                    },\n'
+    '                    Box::new(ToggleZoom),\n'
+    '                    !zoomable,\n'
+    '                )'
 )
 
-def replacer(m):
-    indent = m.group(1)
-    original = m.group(0)
-    inner = re.sub(r'\s*\.disabled\(zoomable\.is_none\(\)\)', '', original)
-    return (
-        indent + '.when_some(zoomable, |menu, _| {\n' +
-        indent + '    menu' + inner.lstrip() + '\n' +
-        indent + '})'
-    )
+NEW = (
+    '                .when(zoomable, |this| {\n'
+    '                    this.separator()\n'
+    '                        .menu(\n'
+    '                            if zoomed {\n'
+    '                                t!("Dock.Zoom Out")\n'
+    '                            } else {\n'
+    '                                t!("Dock.Zoom In")\n'
+    '                            },\n'
+    '                            Box::new(ToggleZoom),\n'
+    '                        )\n'
+    '                })'
+)
 
-patched, count = ZOOM_PATTERN.subn(replacer, src)
+if OLD not in src:
+    print("WARNING: expected Zoom In pattern not found in tab_panel.rs.", file=sys.stderr)
+    print("         Panel menus may show a greyed 'Zoom In' item.", file=sys.stderr)
+    print("         Inspect and patch manually: " + path, file=sys.stderr)
+    sys.exit(0)  # non-fatal: build still works
 
-if count == 0:
-    # Fallback: simpler .entry() form
-    FALLBACK = re.compile(
-        r'([ \t]*)(\.entry\s*\(\s*"Zoom In"[^)]*\))\s*\n'
-        r'([ \t]*\.disabled\(zoomable\.is_none\(\)\))',
-        re.DOTALL
-    )
-    def fallback_replacer(m):
-        indent = m.group(1)
-        entry = m.group(2)
-        return indent + '.when_some(zoomable, |menu, _| menu' + entry + ')'
-    patched, count = FALLBACK.subn(fallback_replacer, src)
-
-if count == 0:
-    print("WARNING: could not locate Zoom In pattern in tab_panel.rs.", file=sys.stderr)
-    print("         Panel menus will still show a greyed 'Zoom In' item.", file=sys.stderr)
-    print("         Apply the patch manually: " + path, file=sys.stderr)
-    sys.exit(0)  # non-fatal: build still works, cosmetic only
-
+patched = src.replace(OLD, NEW, 1)
 with open(path, 'w') as f:
     f.write(patched)
-
-print("Applied " + str(count) + " substitution(s).")
+print("  tab_panel.rs patched.")
 PYEOF
-fi
 
 echo ""
 echo "Done. vendor/gpui-component is ready."
