@@ -57,6 +57,7 @@ echo "Patching vendor Cargo.toml files (workspace -> explicit)..."
 python3 - \
   "${VENDOR_DIR}/crates/ui/Cargo.toml" \
   "${VENDOR_DIR}/crates/assets/Cargo.toml" \
+  "${VENDOR_DIR}/crates/macros/Cargo.toml" \
 <<'PYEOF'
 import re, sys
 
