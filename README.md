@@ -177,7 +177,7 @@ sudo apt-get install -y \
   cmake pkg-config \
   libxkbcommon-dev libxkbcommon-x11-dev \
   libwayland-dev libvulkan-dev \
-  libx11-dev libxcb1-dev
+  libx11-dev libxcb1-dev libxcb-xkb-dev
 ```
 
 **Rust toolchain** (both platforms)

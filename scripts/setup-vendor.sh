@@ -100,7 +100,7 @@ def patch(path):
     # 1. Dotted package field: `edition.workspace = true`
     def replace_pkg_field(m):
         key = m.group(1)
-        defaults = {'edition': '"2021"', 'license': '"Apache-2.0"'}
+        defaults = {'edition': '"2024"', 'license': '"Apache-2.0"'}
         return f'{key} = {defaults.get(key, "# removed")}' if key not in WORKSPACE_DEPS else m.group(0)
     src = re.sub(r'^([\w-]+)\.workspace\s*=\s*true\s*$', replace_pkg_field, src, flags=re.MULTILINE)
 
@@ -172,30 +172,30 @@ if '.when(zoomable' in src:
     sys.exit(0)
 
 OLD = (
-    '                .separator()\n'
-    '                .menu_with_disabled(\n'
-    '                    if zoomed {\n'
-    '                        t!("Dock.Zoom Out")\n'
-    '                    } else {\n'
-    '                        t!("Dock.Zoom In")\n'
-    '                    },\n'
-    '                    Box::new(ToggleZoom),\n'
-    '                    !zoomable,\n'
-    '                )'
+    '                                    .separator()\n'
+    '                                    .menu_with_disabled(\n'
+    '                                        if zoomed {\n'
+    '                                            t!("Dock.Zoom Out")\n'
+    '                                        } else {\n'
+    '                                            t!("Dock.Zoom In")\n'
+    '                                        },\n'
+    '                                        Box::new(ToggleZoom),\n'
+    '                                        !zoomable,\n'
+    '                                    )'
 )
 
 NEW = (
-    '                .when(zoomable, |this| {\n'
-    '                    this.separator()\n'
-    '                        .menu(\n'
-    '                            if zoomed {\n'
-    '                                t!("Dock.Zoom Out")\n'
-    '                            } else {\n'
-    '                                t!("Dock.Zoom In")\n'
-    '                            },\n'
-    '                            Box::new(ToggleZoom),\n'
-    '                        )\n'
-    '                })'
+    '                                    .when(zoomable, |this| {\n'
+    '                                        this.separator()\n'
+    '                                            .menu(\n'
+    '                                                if zoomed {\n'
+    '                                                    t!("Dock.Zoom Out")\n'
+    '                                                } else {\n'
+    '                                                    t!("Dock.Zoom In")\n'
+    '                                                },\n'
+    '                                                Box::new(ToggleZoom),\n'
+    '                                            )\n'
+    '                                    })'
 )
 
 if OLD not in src:
