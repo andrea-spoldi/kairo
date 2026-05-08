@@ -177,7 +177,7 @@ sudo apt-get install -y \
   cmake pkg-config \
   libxkbcommon-dev libxkbcommon-x11-dev \
   libwayland-dev libvulkan-dev \
-  libx11-dev libxcb1-dev
+  libx11-dev libxcb1-dev libxcb-xkb-dev
 ```
 
 **Rust toolchain** (both platforms)
@@ -193,13 +193,24 @@ Kairo requires a recent stable Rust (1.80+). `rustup update stable` if you are o
 ```bash
 git clone https://github.com/andrea-spoldi/kubescope_
 cd kubescope_
+
+# Required: recreate the vendored gpui-component (gitignored, see note below)
+bash scripts/setup-vendor.sh
+
 cargo build --release -p kairo-ui
 ./target/release/kairo
 ```
 
-> **First build note:** The GPUI dependency is pulled from the Zed monorepo and
-> gpui-component from Longbridge — both via git. The first clone can take a few
-> minutes; subsequent builds use Cargo's local cache.
+> **Vendor note:** Kairo applies a source-level patch to `gpui-component` to
+> suppress a cosmetic UI issue (greyed "Zoom In" in every panel menu).
+> Because the patched source is too large to commit, `vendor/` is gitignored
+> and must be recreated with `setup-vendor.sh` after every fresh clone.
+> The script clones `gpui-component` at the exact pinned rev, adjusts its
+> Cargo.toml, and applies the patch automatically.
+
+> **First build note:** GPUI is pulled from the Zed monorepo via git.
+> The initial fetch can take a few minutes; subsequent builds use Cargo's
+> local cache.
 
 ### Useful commands
 

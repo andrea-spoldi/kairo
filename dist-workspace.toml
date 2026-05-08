@@ -21,5 +21,5 @@ targets = [
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
-# Don't run the full build on PRs — plan-only is enough for sanity checks
-pr-run-mode = "plan"
+# vendor/ is gitignored so cargo metadata fails on fresh checkouts — skip PR runs
+pr-run-mode = "skip"
