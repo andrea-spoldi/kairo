@@ -1,0 +1,57 @@
+# Runs semantic-release on every push to main.
+# Analyzes conventional commits since the last tag, determines the next
+# semver version, bumps Cargo.toml + Cargo.lock, commits them, and pushes
+# a tag (e.g. v0.13.0).  The tag push then triggers release.yml which
+# runs cargo-dist to build binaries and create the GitHub Release, and
+# dmg.yml which builds the macOS DMG.
+#
+# REQUIRED SECRET: RELEASE_TOKEN
+#   A GitHub Personal Access Token (classic) with `repo` scope.
+#   GITHUB_TOKEN cannot be used here because pushes made with it do not
+#   trigger other workflow runs (GitHub safety measure).
+#   Steps to create:
+#     1. GitHub → Settings → Developer settings → Personal access tokens
+#     2. Generate new token (classic), select scope: repo
+#     3. Copy the token
+#     4. Repository → Settings → Secrets → Actions → New repository secret
+#        Name: RELEASE_TOKEN, Value: <paste token>
+
+name: Semantic Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+        run: npx semantic-release
