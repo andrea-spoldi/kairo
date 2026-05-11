@@ -1,3 +1,9 @@
+## [0.13.1](https://github.com/andrea-spoldi/kairo/compare/v0.13.0...v0.13.1) (2026-05-11)
+
+### Bug Fixes
+
+* **ci:** run setup-vendor.sh in release workflow before dist ([258cb25](https://github.com/andrea-spoldi/kairo/commit/258cb25ebea3757da52609aff0d4821f9f5b8b8d))
+
 ## [0.13.0](https://github.com/andrea-spoldi/kairo/compare/v0.12.1...v0.13.0) (2026-05-08)
 
 ### Features
