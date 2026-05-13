@@ -121,6 +121,9 @@ fn main() {
                             height: px(480.),
                         }),
                         kind: WindowKind::Normal,
+                        // Lets the compositor (X11 WM_CLASS / Wayland app_id) look up
+                        // the icon from the system icon theme or the installed .desktop file.
+                        app_id: Some("kairo".to_string()),
                         ..Default::default()
                     },
                     |window, cx| {
