@@ -1,3 +1,9 @@
+## [0.13.2](https://github.com/andrea-spoldi/kairo/compare/v0.13.1...v0.13.2) (2026-05-13)
+
+### Bug Fixes
+
+* **ci:** replace cargo-dist with simple Linux release workflow ([67901d1](https://github.com/andrea-spoldi/kairo/commit/67901d1f28320a157c0f42a869f60a863281af56))
+
 ## [0.13.1](https://github.com/andrea-spoldi/kairo/compare/v0.13.0...v0.13.1) (2026-05-11)
 
 ### Bug Fixes
