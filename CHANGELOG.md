@@ -1,3 +1,9 @@
+## [0.13.3](https://github.com/andrea-spoldi/kairo/compare/v0.13.2...v0.13.3) (2026-05-13)
+
+### Bug Fixes
+
+* set app_id, bundle icon+desktop in release tarball, drop arm build ([0e99941](https://github.com/andrea-spoldi/kairo/commit/0e99941f002edbe4563226c9135052ac87bb0642))
+
 ## [0.13.2](https://github.com/andrea-spoldi/kairo/compare/v0.13.1...v0.13.2) (2026-05-13)
 
 ### Bug Fixes
