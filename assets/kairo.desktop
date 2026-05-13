@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Kairo
+Comment=Real-time situational awareness UI for Kubernetes
+Exec=kairo
+Icon=kairo
+Terminal=false
+Categories=Development;System;
+Keywords=kubernetes;k8s;observability;pods;
+StartupWMClass=kairo

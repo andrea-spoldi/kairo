@@ -12,18 +12,6 @@ license.workspace = true
 name = "kairo"
 path = "src/main.rs"
 
-# System packages required to compile GPUI on Linux.
-# cargo-dist injects these via apt before the build step.
-[package.metadata.dist.dependencies.apt]
-cmake = '*'
-pkg-config = '*'
-libxkbcommon-dev = '*'
-libxkbcommon-x11-dev = '*'
-libwayland-dev = '*'
-libvulkan-dev = '*'
-libx11-dev = '*'
-libxcb1-dev = '*'
-
 # macOS app bundle config (used by `cargo bundle` + make-dmg.sh).
 # Run `bash scripts/make-icons.sh` first to generate assets/icons/kairo.icns.
 [package.metadata.bundle]
